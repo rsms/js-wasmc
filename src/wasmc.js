@@ -253,7 +253,7 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     '(function(exports){"use strict";\n'
 
   const postamble = opts.esmod ? '' :
-    `})(this,typeof exports!='undefined'?exports:this["${modname}"]={})`
+    `}).call(this,typeof exports!='undefined'?exports:this["${modname}"]={})`
 
   let options = {
     toplevel: !opts.debug,
