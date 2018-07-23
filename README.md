@@ -16,23 +16,42 @@ options:
   -esmod      Generate ES6 module instead of UMD module
 ```
 
-Example:
+### Example
+
+Input `src/foo.js`:
+
+```js
+// "Module" here is a variable holding the namespace of the WASM module
+export function hello() {
+  Module["_hello"]()
+}
+```
+
+Build:
 
 ```
 $ emcc -s WASM=1 src/foo.c -o tmp/foo.js
 $ wasmc tmp/foo.js src/foo.js foo.js
 $ mv tmp/foo.wasm foo.wasm
+```
+
+Generated `foo.js`:
+
+```js
+(function(exports){"use strict";
+//
+// -- emscripten bootstrap code here --
+//
+Object.defineProperty(exports,"__esModule",{value:!0});
+exports.hello=function(){m["_hello"]()}
+})(this,typeof exports!='undefined'?exports:this["foo"]={})
+```
+
+Run:
+
+```
 $ node -e "console.log(require('./foo.js').hello())"
 Hello world
-```
-
-`src/foo.js`:
-
-```
-// "Module" here is a variable holding the namespace of the WASM module
-export function hello() {
-  Module["_hello"]()
-}
 ```
 
 
