@@ -44,7 +44,7 @@ Generated `foo.js`:
 //
 Object.defineProperty(exports,"__esModule",{value:!0});
 exports.hello=function(){m["_hello"]()}
-})(this,typeof exports!='undefined'?exports:this["foo"]={})
+}).call(this,typeof exports!='undefined'?exports:this["foo"]={})
 ```
 
 Run:
