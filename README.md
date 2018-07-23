@@ -50,7 +50,7 @@ exports.hello=function(){m["_hello"]()}
 Run:
 
 ```
-$ node -e "console.log(require('./foo.js').hello())"
+$ node -e "require('./foo.js').hello()"
 Hello world
 ```
 
