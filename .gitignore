@@ -1,0 +1,4 @@
+**/.DS_Store
+*.g.*
+node_modules
+deps/build
