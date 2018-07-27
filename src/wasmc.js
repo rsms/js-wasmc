@@ -60,15 +60,20 @@ const modname = Path.basename(outfile, Path.extname(outfile))
 
 function main() {
   rollupWrapper(wrapperfile).then(r => {
-    // console.log('rollupWrapper =>', r)
+    // console.log('rollupWrapper =>', r.code)
     compileBundle(r.code, r.map.toString(), r.exports)
   }).catch(err => {
-    if (err.filename && err.line !== undefined) {
-      console.error('%s:%d:%d %s',
-        err.filename, err.line, err.col, err.message)
+    let file = err.filename || (err.loc && err.loc.file) || null
+    let line = err.line || (err.loc && err.loc.line) || 0
+    let col = err.col || err.column || (err.loc && err.loc.column) || 0
+    if (file) {
+      console.error('%s:%d:%d %s', file, line, col, err.message)
+      if (err.frame && typeof err.frame == 'string') {
+        console.error(err.frame)
+      }
+    } else {
+      console.error(err.stack || String(err), err)
     }
-    console.error(err.stack || String(err))
-    process.exit(1)
   })
 }
 
@@ -84,67 +89,18 @@ function rollupWrapper(wrapperfile) {
       sourcemap: true,
       // sourcemapFile: 'bob',
       // name: modname,
+      // banner: '((Module)=>{',
+      // footer: '})()',
     })
   })
-}
-
-
-function getEmccFileSource(emccfile) {
-  // Module['locateFile']
-
-  let preamble = `
-  var Module = {};
-  function emptyfun(){}
-
-  try {
-    Module['wasmBinary'] = require('fs').readFileSync(__dirname + '/fontkit.wasm')
-  } catch(_) {
-    /*Module['locateFile'] = function(name) {
-      console.log('locateFile %o', name)
-      var p = name.lastIndexOf('.')
-      var ext = name.substr(p).toLowerCase()
-      if (ext == '.wasm') {
-        return
-      }
-    }*/
-  }
-
-  // Module['readBinary'] = function(name) {
-  //   console.log('readBinary %o', name)
-  //   return new Promise((resolve, reject) => {
-  //     require('fs').readFile(__dirname + '/fontkit.wasm', (err, buf) => {
-  //       if (err) { reject(err) } else { resolve(buf) }
-  //     })
-  //   })
-  // }
-  `.replace(/^\s{2}/g, '')
-
-  if (opts.debug) {
-    preamble += `
-    Module['print'] = function(msg) { console.log('[wasm log] ' + msg) }
-    Module['printErr'] = function(msg) { console.error('[wasm err] ' + msg) }
-    `.replace(/^\s{4}/g, '')
-  } else {
-    preamble += `
-    function out(){}
-    function err(){}
-    Module['print'] = emptyfun
-    Module['printErr'] = emptyfun
-    `.replace(/^\s{4}/g, '')
-  }
-
-  let js = fs.readFileSync(emccfile, 'utf8')
-
-  // js += '\nwarnOnce = function(){};'
-
-  return preamble + js
 }
 
 
 const ast = uglify.ast
 
 
-function mkvardef(nameAndValues) {
+// mkvardef(varcons :{new(props)=>ast.Node}, nameAndValues : string[][])
+function mkvardef(varcons, nameAndValues) {
   let definitions = []
   for (let [name, value] of nameAndValues) {
     if (!(name instanceof ast.Symbol)) {
@@ -164,7 +120,7 @@ function mkvardef(nameAndValues) {
       new ast.VarDef({ name, value })
     )
   }
-  return new ast.Var({ definitions })
+  return new varcons({ definitions })
 }
 
 
@@ -226,19 +182,20 @@ function transformEmccAST(toplevel) {
           // rewrite abort to ignore argument that's a lengthy
           // message, and replace it with a definition.
           // console.log(node, descend, inList)
-          let argname0 = node.argnames[0].name
-          node.argnames = []
+          if (node.argnames.length > 0) {
+            let argname0 = node.argnames[0].name
+            node.argnames = []
 
-          // introduce the same name as a variable with undefined value
-          let name = argname0
-          node.body.unshift(
-            mkvardef([[argname0, null]])
-          )
+            // introduce the same name as a variable with undefined value
+            let name = argname0
+            node.body.unshift(
+              mkvardef(ast.Var, [[argname0, null]])
+            )
+          }
         }
 
       } else if (node instanceof ast.Toplevel) {
-        descend(node, this)
-      
+        return descend(node, this)
       }
       // else console.log(node.TYPE)
 
@@ -248,12 +205,228 @@ function transformEmccAST(toplevel) {
 }
 
 
+function wrapInCallClosure0(node) {
+  let body = node.body
+  node.body = [
+    new ast.SimpleStatement({
+      body: new ast.Call({
+        args: [],
+        expression: new ast.Arrow({
+          argnames: [],
+          uses_arguments: false,
+          is_generator: false,
+          async: false,
+          body: body,
+        }),
+      })
+    })
+  ]
+  return node
+}
+
+
+function wrapInCallClosure(node) {
+  return node.transform(new uglify.TreeTransformer(
+    function(n, descend, inList) {
+      if (n === node) {
+        return wrapInCallClosure0(n)
+      }
+      return n
+    })
+  )
+}
+
+
+function wrapSingleExport(node, localName, exportName) {
+  // example
+  // input:
+  //   var localName = 1
+  // output:
+  //   var exportName = (() => {
+  //     var localName = 1
+  //     return localName
+  //   })()
+  //
+  node.body.push(
+    new ast.Return({
+      value: new ast.SymbolVar({ name: localName })
+    })
+  )
+
+  wrapInCallClosure0(node)
+
+  node.body[0] = mkvardef(ast.Const, [
+    [exportName, node.body[0]]
+  ])
+
+  return node
+}
+
+
+// function debugAST(toplevel) {
+//   return toplevel.transform(new uglify.TreeTransformer(
+//     function(node, descend, inList) {
+//       if (node instanceof ast.Toplevel) {
+//         descend(node, this)
+
+//         // return wrapSingleExport(node, 'asm', 'asmz')
+
+//         node.body.push(
+//           new ast.Return({
+//             value: new ast.SymbolVar({ name: 'asm' })
+//           })
+//         )
+//         return mkvardef(ast.Var, [
+//           ['asmz', wrapInCallClosure0(node)]
+//         ])
+
+//         return node
+//       }
+//       console.log(node.TYPE)
+//       // if (node instanceof ast.Directive) {
+//       //   return descend(node, this)
+//       // }
+//       if (node instanceof ast.Defun || node instanceof ast.SymbolDefun) {
+//         return descend(node, this)
+//       }
+//       if (node instanceof ast.Return) {
+//         console.log(node)
+//         return descend(node, this)
+//       }
+//       return node
+//     })
+//   )
+// }
+
+
+function getModuleEnclosure(modname) {
+
+  let preRun = '', postRun = ''
+
+  // let performTiming = opts.debug
+  // if (performTiming) {
+  //   let label = JSON.stringify(modname + ' module-init')
+  //   preRun = `()=>{console.time(${label})}`
+  //   postRun = `()=>{console.timeEnd(${label})}`
+  // }
+
+
+
+  let pre = `
+
+  let IS_NODEJS_LIKE = (
+    typeof process === "object" &&
+    typeof require === "function"
+  )
+  let Path, Fs
+  if (IS_NODEJS_LIKE) {
+    try {
+      Path = require('path')
+      Fs = require('fs')
+    } catch(_) {
+      IS_NODEJS_LIKE = false
+    }
+  }
+
+  // clear module to avoid emcc code to export THE ENTIRE WORLD
+  let orig_module
+  if (typeof module != 'undefined') {
+    orig_module = module
+    module = undefined
+  }
+
+  function emptyfun(){}
+
+  var Module = {
+    preRun: [${preRun}],
+    postRun: [${postRun}],
+
+    print(text) {
+      console.log.apply(console, Array.prototype.slice.call(arguments))
+    },
+
+    printErr(text) {
+      console.error.apply(console, Array.prototype.slice.call(arguments))
+    },
+  }
+
+
+  Module.ready = new Promise((resolve,reject) => {
+    Module.onRuntimeInitialized = () => {
+      // console.log('onRuntimeInitialized called')
+      asm = Module["asm"] // re-export updated wasm api
+      if (typeof define == 'function') {
+        define(${JSON.stringify(modname)}, exports)
+      }
+      resolve()
+    }
+  })
+
+
+  if (IS_NODEJS_LIKE) {
+    Module.locateFile = function(name) {
+      return Path.join(__dirname, name)
+    }
+  }
+
+
+  `.trim().replace(/^\s{2}/g, '')
+
+  if (opts.debug) {
+    pre += `
+    Module['print'] = function(msg) { console.log('[wasm log] ' + msg) }
+    Module['printErr'] = function(msg) { console.error('[wasm err] ' + msg) }
+    `.trim().replace(/^\s{4}/g, '')
+  } else {
+    pre += `
+    function out(){}
+    function err(){}
+    Module['print'] = emptyfun
+    Module['printErr'] = emptyfun
+    `.trim().replace(/^\s{4}/g, '')
+  }
+
+
+  let mid = `
+
+  Module.inspect = () => "[asm]"
+
+  // Restore temporarily nulled module variable
+  if (orig_module !== undefined) {
+    module = orig_module
+    orig_module = undefined
+  }
+
+  // Alias Module.asm as asm for convenience
+  // const asm = Module.asm
+
+  `.trim().replace(/^\s{2}/g, '')
+
+
+  let post = ``
+
+  return { pre, mid, post }
+}
+
+
+function getEmccFileSource(emccfile) {
+  return fs.readFileSync(emccfile, 'utf8')
+}
+
+
 function compileBundle(wrapperCode, wrapperMap, exportedNames) {
-  const preamble = opts.esmod ? '' :
+  // const emccWrapper = {
+  //   pre: 'const asm = (()=>{\n',
+  //   post: 'return Module.asm})()',
+  // }
+
+  const wrapperStart = opts.esmod ? '' :
     '(function(exports){"use strict";\n'
 
-  const postamble = opts.esmod ? '' :
+  const wrapperEnd = opts.esmod ? '' :
     `}).call(this,typeof exports!='undefined'?exports:this["${modname}"]={})`
+
+  const enclosure = getModuleEnclosure(modname)
 
   let options = {
     toplevel: !opts.debug,
@@ -269,9 +442,9 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     },
     output: {
       ecma: opts.esmod ? 7 : 6,
-      beautify: opts.debug,
+      beautify: true, // opts.debug,
       indent_level: 2,
-      preamble,
+      preamble: wrapperStart,
     },
     sourceMap: {
       content: wrapperMap,
@@ -281,16 +454,27 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
   // Explicitly parse source files in order since order matters.
   // Note: uglify.minify takes an unordered object for muliple files.
   let srcfiles = [
-    [emccfile, getEmccFileSource(emccfile)],
+    enclosure.pre && ['<wasmcpre>', enclosure.pre],
+    [emccfile, getEmccFileSource(emccfile) + enclosure.mid],
+    // enclosure.mid && ['<wasmcmid>', enclosure.mid],
     [wrapperfile, wrapperCode],
-  ]
+    enclosure.post && ['<wasmcpost>', enclosure.post],
+  ].filter(v => !!v)
   options.parse = options.parse || {}
   options.parse.toplevel = null
   for (let [name, source] of srcfiles) {
     options.parse.filename = name
     options.parse.toplevel = uglify.parse(source, options.parse)
-    if (name == emccfile && !opts.debug) {
-      options.parse.toplevel = transformEmccAST(options.parse.toplevel)
+    if (name == emccfile) {
+      if (!opts.debug) {
+        options.parse.toplevel = transformEmccAST(options.parse.toplevel)
+      }
+      // options.parse.toplevel = wrapInCallClosure(options.parse.toplevel)
+      // options.parse.toplevel = wrapSingleExport(
+      //   options.parse.toplevel,
+      //   'asm',
+      //   'asm'
+      // )
     }
   }
 
@@ -301,7 +485,7 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     return
   }
 
-  fs.writeFileSync(outfile, r.code + postamble, 'utf8')
+  fs.writeFileSync(outfile, r.code + wrapperEnd, 'utf8')
 }
 
 
