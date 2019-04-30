@@ -1,6 +1,6 @@
 {
   "name": "wasmc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "post-Emscripten WASM/ASMJS bundler",
   "bin": {
     "wasmc": "wasmc"

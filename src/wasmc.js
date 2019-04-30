@@ -10,8 +10,10 @@ const Path = require('path')
 
 const opts = {
   h: false, help: false,
+  g:false,  debug: false,
+  pretty: false, // when true, pretty-print output. on by default when debug
   esmod: false,
-  g:false, debug: false,
+  embed: false,
 }
 
 const args = process.argv.splice(2)
@@ -42,7 +44,9 @@ function usage() {
   options:
     -h, -help   Show help message and exit
     -g, -debug  Generate more easily debuggable code
+    -pretty     Generate pretty code. Implied with -g, -debug.
     -esmod      Generate ES6 module instead of UMD module
+    -embed      Embed WASM code in JS file
 
   `.trim().replace(/^\s\s/gm, ''))
   process.exit(1)
@@ -374,16 +378,35 @@ function getModuleEnclosure(modname) {
 
   if (opts.debug) {
     pre += `
-    Module['print'] = function(msg) { console.log('[wasm log] ' + msg) }
-    Module['printErr'] = function(msg) { console.error('[wasm err] ' + msg) }
+    Module['print'] = function(msg) { console.log('[wasm log] ' + msg) };
+    Module['printErr'] = function(msg) { console.error('[wasm err] ' + msg) };
     `.trim().replace(/^\s{4}/g, '')
   } else {
     pre += `
     function out(){}
     function err(){}
-    Module['print'] = emptyfun
-    Module['printErr'] = emptyfun
+    Module['print'] = emptyfun;
+    Module['printErr'] = emptyfun;
     `.trim().replace(/^\s{4}/g, '')
+  }
+
+
+  if (opts.embed) {
+    let wasmfile = (
+      emccfile.substr(0, emccfile.length - Path.extname(emccfile).length) +
+      '.wasm'
+    )
+    let wasmbuf = fs.readFileSync(wasmfile)
+    pre += 'Module["wasmBinary"] = new Uint8Array(['
+    for (let i = 0; i < wasmbuf.length; i++) {
+      let s = wasmbuf[i].toString(10)
+      if (i > 0) {
+        pre += ',' + s
+      } else {
+        pre += s
+      }
+    }
+    pre += ']);'
   }
 
 
@@ -442,7 +465,7 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     },
     output: {
       ecma: opts.esmod ? 7 : 6,
-      beautify: true, // opts.debug,
+      beautify: opts.debug || opts.pretty,
       indent_level: 2,
       preamble: wrapperStart,
     },
@@ -460,6 +483,7 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     [wrapperfile, wrapperCode],
     enclosure.post && ['<wasmcpost>', enclosure.post],
   ].filter(v => !!v)
+
   options.parse = options.parse || {}
   options.parse.toplevel = null
   for (let [name, source] of srcfiles) {
