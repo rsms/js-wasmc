@@ -13,17 +13,20 @@ usage: wasmc [options] <emccfile> <wrapperfile> <outfile>
 options:
   -h, -help   Show help message and exit
   -g, -debug  Generate more easily debuggable code
+  -pretty     Generate pretty code. Implied with -g, -debug.
   -esmod      Generate ES6 module instead of UMD module
+  -embed      Embed WASM code in JS file
 ```
 
 ### Example
 
+> See the [`example`](example/) directory for a complete example.
+
 Input `src/foo.js`:
 
 ```js
-// "Module" here is a variable holding the namespace of the WASM module
 export function hello() {
-  Module["_hello"]()
+  Module._hello() // WASM function "hello"
 }
 ```
 
@@ -39,20 +42,22 @@ Generated `foo.js`:
 
 ```js
 (function(exports){"use strict";
-//
 // -- emscripten bootstrap code here --
-//
 Object.defineProperty(exports,"__esModule",{value:!0});
-exports.hello=function(){m["_hello"]()}
+exports.hello=function(){m._hello()}
 }).call(this,typeof exports!='undefined'?exports:this["foo"]={})
 ```
 
 Run:
 
 ```
-$ node -e "require('./foo.js').hello()"
-Hello world
+$ node -e 'require("./out/foo.js").onload.then(m => m.hello())'
+[wasm log] Hello from wasm
 ```
+
+Note that WASM initialization is asynchronous since a separate wasm file
+is loaded. This is why we wait for the onload promise above before calling
+the hello function.
 
 
 ## Building from source
@@ -62,14 +67,9 @@ npm install
 npm run build
 ```
 
-Build debug product `wasmc.g.js`:
+- Release product: `wasmc`
+- Debug product: `wasmc.g.js`
 
-```
-npm run build-g
-```
-
-Watch & rebuild debug product as sources changes:
-
-```
-npm run build-w
-```
+`npm run build-g` builds only the debug product.
+You can also have the build script watch source for changes and automatically
+rebuild the debug product: `npm run build-w`

@@ -1,4 +1,5 @@
 **/.DS_Store
 *.g.*
-node_modules
-deps/build
+/node_modules
+/deps/build
+/example/out
