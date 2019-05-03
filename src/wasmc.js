@@ -10,7 +10,8 @@ const Path = require('path')
 
 const opts = {
   h: false, help: false,
-  g:false,  debug: false,
+  g: false, debug: false,
+  v: false, verbose: false,
   pretty: false, // when true, pretty-print output. on by default when debug
   esmod: false,
   embed: false,
@@ -42,11 +43,12 @@ function usage() {
 
   usage: wasmc [options] <emccfile> <wrapperfile> <outfile>
   options:
-    -h, -help   Show help message and exit
-    -g, -debug  Generate more easily debuggable code
-    -pretty     Generate pretty code. Implied with -g, -debug.
-    -esmod      Generate ES6 module instead of UMD module
-    -embed      Embed WASM code in JS file
+    -h, -help     Show help message and exit
+    -g, -debug    Generate more easily debuggable code
+    -v, -verbose  Print extra information to stdout
+    -pretty       Generate pretty code. Implied with -g, -debug.
+    -esmod        Generate ES6 module instead of UMD module
+    -embed        Embed WASM code in JS file
 
   `.trim().replace(/^\s\s/gm, ''))
   process.exit(1)
@@ -57,15 +59,17 @@ if (args.length != 3 || opts.h || opts.help) {
 }
 
 opts.debug = opts.debug || opts.g
+opts.verbose = opts.verbose || opts.v
 
 const [emccfile, wrapperfile, outfile] = args
 const modname = Path.basename(outfile, Path.extname(outfile))
 
-
 function main() {
   rollupWrapper(wrapperfile).then(r => {
-    // console.log('rollupWrapper =>', r.code)
-    compileBundle(r.code, r.map.toString(), r.exports)
+    if (opts.verbose) {
+      console.log(`[info] JS exports:`, r.exports.join(', '))
+    }
+    compileBundle(r.code, r.map.toString()/*, r.exports*/)
   }).catch(err => {
     let file = err.filename || (err.loc && err.loc.file) || null
     let line = err.line || (err.loc && err.loc.line) || 0
@@ -87,7 +91,6 @@ function rollupWrapper(wrapperfile) {
     input: wrapperfile,
   }
   return rollup.rollup(rollupOptions).then(r => {
-    // console.log('rollup =>', r)
     return r.generate({
       format: opts.esmod ? 'es' : 'cjs',
       sourcemap: true,
@@ -154,17 +157,86 @@ function shouldStripFunNamed(name) {
 
 
 function transformEmccAST(toplevel) {
-  return toplevel.transform(new uglify.TreeTransformer(
+  let updateAPIFun = null
+  let ModuleObj = null
+  let apiEntries = new Map()
+
+  const dummyLoc = {file:"<wasmpre>",line:0,col:0}
+
+  let newTopLevel = toplevel.transform(new uglify.TreeTransformer(
     function(node, descend, inList) {
 
       if (node instanceof ast.Var) {
 
         for (let i = 0; i < node.definitions.length; i++) {
           let def = node.definitions[i]
-          if (def.name && stripDefsWithName.has(def.name.name)) {
+          if (!def.name) {
+            continue
+          }
+          if (stripDefsWithName.has(def.name.name)) {
             // console.log(`strip def %o`, def.name.name)
             node.definitions.splice(i, 1)
             i--
+          } else {
+            // Pattern of asm route:
+            //
+            // var _foo = Module["_foo"] = function() {
+            //   assert(runtimeInitialized, "msg");
+            //   assert(!runtimeExited, "msg");
+            //   return Module["asm"]["_foo"].apply(null, arguments);
+            // }
+            //
+            // rewrite as:
+            //
+            // var _foo = Module["_foo"] = Module["asm"]["_foo"];
+            //
+            // which, when building optimized builds, maps from WASM mangled
+            // names to api name, e.g
+            //
+            // var _foo = Module["_foo"] = Module["asm"]["a"];
+            //
+
+            if (def.name.name[0] == '_') {
+
+              if (def.value &&
+                  def.value.operator == '=' &&
+                  def.value.right instanceof ast.Function &&
+                  def.value.start.type == 'name' &&
+                  def.value.start.value == 'Module')
+              {
+                // case: var name = function() { ... }
+                let name = def.name.name
+                let f = def.value.right
+                if (!f instanceof ast.Function) {
+                  console.error('lolololol', f.TYPE, f)
+                }
+                let lastStmt = f.body[f.body.length-1]
+                if (lastStmt instanceof ast.Return &&
+                    lastStmt.value instanceof ast.Call &&
+                    lastStmt.value.expression instanceof ast.Dot &&
+                    !apiEntries.has(name))
+                {
+                  let mangledName = (
+                    lastStmt.value.expression.property == 'apply' ?
+                      lastStmt.value.expression.expression.property.value :
+                      lastStmt.value.expression.property.value
+                  )
+
+                  if (!(def.value.left instanceof ast.Sub)) {
+                    // Sanity check -- expected "Module["_foo"]"
+                    // In case emcc changes its output, we'll know.
+                    throw new Error(`Module["${name}"] not found`)
+                  }
+
+                  apiEntries.set(name, {
+                    wasm: mangledName,
+                    sym: def.name,
+                    expr: lastStmt.value.expression.expression,
+                    modsub: def.value.left,
+                  })
+                }
+              }
+            }
           }
         }
 
@@ -175,26 +247,31 @@ function transformEmccAST(toplevel) {
 
       } else if (node instanceof ast.Defun && node.name) {
         let name = node.name.name
-        if (shouldStripFunNamed(name)) {
-          // console.log(`strip fun %o`, name)
-          node.argnames = []
-          node.body = []
-          node.start = undefined
-          node.end = undefined
-          // console.log(node, descend, inList)
-        } else if (name == 'abort') {
-          // rewrite abort to ignore argument that's a lengthy
-          // message, and replace it with a definition.
-          // console.log(node, descend, inList)
-          if (node.argnames.length > 0) {
-            let argname0 = node.argnames[0].name
+        if (name == '__wasmcUpdateAPI') {
+          // Save reference to __wasmcUpdateAPI function (patched later)
+          updateAPIFun = node
+        } else if (!opts.debug) {
+          // optimizations
+          if (shouldStripFunNamed(name)) {
+            // console.log(`strip fun %o`, name)
             node.argnames = []
+            node.body = []
+            node.start = undefined
+            node.end = undefined
+            // console.log(node, descend, inList)
+          } else if (name == 'abort') {
+            // rewrite abort to ignore argument that's a lengthy
+            // message, and replace it with a definition.
+            if (node.argnames.length > 0) {
+              let argname0 = node.argnames[0].name
+              node.argnames = []
 
-            // introduce the same name as a variable with undefined value
-            let name = argname0
-            node.body.unshift(
-              mkvardef(ast.Var, [[argname0, null]])
-            )
+              // introduce the same name as a variable with undefined value
+              let name = argname0
+              node.body.unshift(
+                mkvardef(ast.Var, [[argname0, null]])
+              )
+            }
           }
         }
 
@@ -206,6 +283,54 @@ function transformEmccAST(toplevel) {
       return node
     })
   )
+
+  // // Generate var definitions for all WASM API exports.
+  // // These are later assigned.
+  // let defs = [], nullnode = new ast.Undefined()
+  // for (let [name, ent] of apiEntries) {
+  //   defs.push(new ast.VarDef({
+  //     name: new ast.SymbolVar({
+  //       start: dummyLoc,
+  //       end: dummyLoc,
+  //       name: name,
+  //     }),
+  //     value: null,
+  //   }))
+  // }
+  // newTopLevel.body.unshift(
+  //   new ast.Var({ definitions: defs })
+  // )
+
+  if (apiEntries.size == 0) {
+    console.warn(`[warn] no WASM functions found -- this might be a bug`)
+  }
+
+  // add wasm api assignments to __wasmcUpdateAPI function
+  for (let [name, ent] of apiEntries) {
+    // e.g. Module["_foo"] = _foo = Module["asm"]["A"]
+    let vardef = new ast.SimpleStatement({
+      body: new ast.Assign({
+        operator: "=",
+        left: ent.modsub,
+        right: new ast.Assign({
+          operator: "=",
+          left: ent.sym,
+          right: ent.expr,
+        }),
+      })
+    })
+    updateAPIFun.body.push(vardef)
+  }
+
+  if (opts.verbose) {
+    let names = []
+    for (let [name, ent] of apiEntries) {
+      names.push(name)
+    }
+    console.log(`[info] WASM functions: ${names.join(', ')}`)
+  }
+
+  return newTopLevel
 }
 
 
@@ -344,21 +469,15 @@ function getModuleEnclosure(modname) {
   var Module = {
     preRun: [${preRun}],
     postRun: [${postRun}],
-
-    print(text) {
-      console.log.apply(console, Array.prototype.slice.call(arguments))
-    },
-
-    printErr(text) {
-      console.error.apply(console, Array.prototype.slice.call(arguments))
-    },
+    print: console.log.bind(console),
+    printErr: console.error.bind(console),
   }
 
+  function __wasmcUpdateAPI() {}
 
-  Module.ready = new Promise((resolve,reject) => {
+  Module.ready = new Promise(resolve => {
     Module.onRuntimeInitialized = () => {
-      // console.log('onRuntimeInitialized called')
-      asm = Module["asm"] // re-export updated wasm api
+      __wasmcUpdateAPI()
       if (typeof define == 'function') {
         define(${JSON.stringify(modname)}, exports)
       }
@@ -437,7 +556,7 @@ function getEmccFileSource(emccfile) {
 }
 
 
-function compileBundle(wrapperCode, wrapperMap, exportedNames) {
+function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
   // const emccWrapper = {
   //   pre: 'const asm = (()=>{\n',
   //   post: 'return Module.asm})()',
@@ -459,9 +578,14 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
       passes: 2,
       toplevel: true,
       top_retain: ['exports'],
+      hoist_vars: true,
+      keep_classnames: true,
     },
     mangle: opts.debug ? false : {
       toplevel: true,
+      keep_classnames: true,
+      // reserved: [],
+      // keep_quoted: true,
     },
     output: {
       ecma: opts.esmod ? 7 : 6,
@@ -490,9 +614,7 @@ function compileBundle(wrapperCode, wrapperMap, exportedNames) {
     options.parse.filename = name
     options.parse.toplevel = uglify.parse(source, options.parse)
     if (name == emccfile) {
-      if (!opts.debug) {
-        options.parse.toplevel = transformEmccAST(options.parse.toplevel)
-      }
+      options.parse.toplevel = transformEmccAST(options.parse.toplevel)
       // options.parse.toplevel = wrapInCallClosure(options.parse.toplevel)
       // options.parse.toplevel = wrapSingleExport(
       //   options.parse.toplevel,
