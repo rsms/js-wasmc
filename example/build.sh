@@ -12,37 +12,34 @@ set -e
 cd "$(dirname "$0")"
 
 if [ "$1" == "-local" ]; then
-  mkdir -p out/.tmp
 
   # compile C to WASM
-  echo "emcc" *.c "  ->  out/.tmp/foo.js"
+  echo "emcc" *.c "-> out/.tmp/foo.js"
   emcc \
+    -Os \
     -s WASM=1 \
     -s NO_EXIT_RUNTIME=1 \
     -s NO_FILESYSTEM=1 \
     -s ABORTING_MALLOC=0 \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s DISABLE_EXCEPTION_CATCHING=1 \
-    *.c -o out/.tmp/foo.js
+    *.c -o out/foo.js
+
+  cp -a out/foo.js out/emcc.foo.js
+  cp -a out/foo.wasm out/emcc.foo.wasm
 
   # Bundle, combining your javascript and wasm code
-  echo "wasmc out/.tmp/foo.js + foo.js  ->  out/foo.js"
-  ../wasmc -g out/.tmp/foo.js foo.js out/foo.js
-
-  # Move wasm binary into output directory
-  mv out/.tmp/foo.wasm out/foo.wasm
-
-  # Remove temporary build directory
-  rm -rf out/.tmp
+  echo "wasmc out/foo.js foo.js -> out/foo.js"
+  ../wasmc.g -syncinit out/foo.js foo.js
 
   # Run via nodejs
-  echo 'Testing in nodejs via require("./out/foo.js")'
-  node - <<_JS_
-  const foo = require("./out/foo.js")
-  foo.onload.then(m => {
-    m.hello()
-  })
-_JS_
+  echo 'Testing in nodejs: require("./out/foo.js").hello()'
+  node -e 'require("./out/foo.js").hello()'
+
+  # if we did not provide -embed=sync then we'd have to wait for the
+  # "ready" promise before calling functions:
+  # echo 'Testing in nodejs via require("./out/foo.js")'
+  # node -e 'require("./out/foo.js").ready.then(m => m.hello())'
 
 else
   # Build via Docker using an emsdk image

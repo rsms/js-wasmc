@@ -1,5 +1,5 @@
 **/.DS_Store
-*.g.*
+*.g*
 /node_modules
 /deps/build
 /example/out

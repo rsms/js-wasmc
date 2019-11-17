@@ -1,7 +1,7 @@
 {
   "name": "wasmc",
-  "version": "0.1.1",
-  "description": "post-Emscripten WASM/ASMJS bundler",
+  "version": "0.1.2",
+  "description": "Post-Emscripten WASM/ASMJS bundler",
   "bin": {
     "wasmc": "wasmc"
   },
@@ -13,13 +13,14 @@
   "author": "rsms",
   "license": "MIT",
   "scripts": {
-    "build-deps": "./deps/build.sh",
-    "build": "./deps/build.sh && rollup src/wasmc.js --file wasmc.g.js --format cjs --name wasmc --sourcemap --banner '#!/usr/bin/env node\n' && uglifyjs --compress --mangle --ecma 7 -o wasmc --source-map content=wasmc.g.js.map,includeSources=false -- wasmc.g.js && node misc/fixup-sourcemap.js wasmc.map && chmod +x wasmc",
-    "build-g": "rollup src/wasmc.js --file wasmc.g.js --format cjs --name wasmc --sourcemap --banner '#!/usr/bin/env node\n' && chmod +x wasmc.g.js",
-    "build-w": "rollup src/wasmc.js --file wasmc.g.js --format cjs --name wasmc --sourcemap --banner '#!/usr/bin/env node\n' --watch"
+    "build": "./misc/build.sh",
+    "build-g": "./misc/build.sh -g",
+    "build-w": "./misc/build.sh -w"
   },
   "devDependencies": {
+    "google-closure-compiler": "^20191111.0.0",
     "rollup": "^0.63.4",
+    "source-map-support": "^0.5.16",
     "uglify-es": "^3.3.9"
   }
 }
