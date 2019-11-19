@@ -235,50 +235,55 @@ function transformEmccAST(toplevel) {
             // var _foo = Module["_foo"] = Module["asm"]["a"];
             //
 
-            if (def.name.name[0] == '_') {
-              // console.log(def.name.name)
-
-              if (def.value &&
-                  def.value.operator == '=' &&
-                  def.value.right instanceof ast.Function &&
-                  def.value.start.type == 'name' &&
-                  def.value.start.value == 'Module')
+            if (
+              def.value &&
+              def.value.operator == '=' &&
+              def.value.right instanceof ast.Function &&
+              def.value.left.TYPE == "Sub" &&
+              def.value.left.expression.name == "Module"
+            ) {
+              // case: var PROP = Module[PROP] = function() { ... }
+              let name = def.name.name
+              let f = def.value.right
+              let lastStmt = f.body[f.body.length-1]
+              if (lastStmt instanceof ast.Return &&
+                  lastStmt.value instanceof ast.Call &&
+                  lastStmt.value.expression instanceof ast.Dot)
               {
-                // case: var name = function() { ... }
-                let name = def.name.name
-                let f = def.value.right
-                let lastStmt = f.body[f.body.length-1]
-                if (lastStmt instanceof ast.Return &&
-                    lastStmt.value instanceof ast.Call &&
-                    lastStmt.value.expression instanceof ast.Dot)
-                {
-                  if (!apiEntries.has(name)) {
-                    let mangledName = (
-                      lastStmt.value.expression.property == 'apply' ?
-                        lastStmt.value.expression.expression.property.value :
-                        lastStmt.value.expression.property.value
-                    )
+                if (!apiEntries.has(name)) {
+                  let mangledName = (
+                    lastStmt.value.expression.property == 'apply' ?
+                      lastStmt.value.expression.expression.property.value :
+                      lastStmt.value.expression.property.value
+                  )
 
-                    if (!(def.value.left instanceof ast.Sub)) {
-                      // Sanity check -- expected "Module["_foo"]"
-                      // In case emcc changes its output, we'll know.
-                      throw new Error(`Module["${name}"] not found`)
-                    }
+                  if (!(def.value.left instanceof ast.Sub)) {
+                    // Sanity check -- expected "Module["_foo"]"
+                    // In case emcc changes its output, we'll know.
+                    throw new Error(`Module["${name}"] not found`)
+                  }
 
-                    apiEntries.set(name, {
-                      wasm:   mangledName,
-                      sym:    def.name,
-                      expr:   lastStmt.value.expression.expression,
-                      modsub: def.value.left,
-                    })
-                  }
-                  if (name != "___wasm_call_ctors") {
-                    // strip
-                    return new ast.EmptyStatement()
-                  }
+                  apiEntries.set(name, {
+                    wasm:   mangledName,
+                    sym:    def.name,
+                    expr:   lastStmt.value.expression.expression,
+                    modsub: def.value.left,
+                  })
+                }
+                if (name != "___wasm_call_ctors") {
+                  // strip
+                  return new ast.EmptyStatement()
                 }
               }
-            } // def.name.name[0] == '_'
+            } else if (
+              def.name.name.startsWith("real_") &&
+              def.value.TYPE == "Sub" &&
+              def.value.expression.name == "asm"
+            ) {
+              // e.g. var real__hello = asm["hello"];
+              // console.log(def.value.TYPE, def.value.property.value)
+              return new ast.EmptyStatement()
+            }
 
           }
         }
@@ -288,9 +293,25 @@ function transformEmccAST(toplevel) {
         }
 
 
+      } else if (
+        node instanceof ast.SimpleStatement &&
+        node.body instanceof ast.Assign &&
+        node.body.operator == "=" &&
+        node.body.right.TYPE == "Function" &&
+        node.body.left.TYPE == "Sub" && node.body.left.expression.name == "asm"  // asm[PROP]
+      ) {
+        // e.g.
+        //   asm["hello"] = function() {
+        //     return real__hello.apply(null, arguments);
+        //   };
+        return new ast.EmptyStatement()
+
       } else if (node instanceof ast.Defun && node.name) {
+        // Function definition
+
         let name = node.name.name
-        // console.log(">>", name)
+        // console.log("FunDef >>", name)
+
         if (name == '__wasmcUpdateAPI') {
           // Save reference to __wasmcUpdateAPI function (patched later)
           updateAPIFun = node
@@ -301,37 +322,39 @@ function transformEmccAST(toplevel) {
         } else if (name == 'abort' && node !== wasmcAbort) {
           // remove abort implementation from emcc (in favor of __wasmcAbort)
           return new ast.EmptyStatement()
-        // } else if (name == "createWasm") {
-        //   console.log("createWasm")
-        //   return descend(node, this)
-        // } else if (name == "instantiateArrayBuffer") {
-        //   console.log("instantiateArrayBuffer")
-
-          // function instantiateArrayBuffer(receiver) {
-          //   receiver(WebAssembly.instantiate(getBinary(), info))
-          // }
           // Note: info is a variable available in the parent scope
-        } else if (!opts.debug) {
-          // optimizations
-          if (shouldStripFunNamed(name)) {
-            // console.log(`strip fun %o`, name)
-            node.argnames = []
-            node.body = []
-            node.start = undefined
-            node.end = undefined
-            // console.log(node, descend, inList)
-          }
+        } else if (!opts.debug && shouldStripFunNamed(name)) {
+          // console.log(`strip fun %o`, name)
+          // node.argnames = []
+          // node.body = []
+          // node.start = undefined
+          // node.end = undefined
+          return new ast.EmptyStatement()
         }
 
       } else if (node instanceof ast.Toplevel) {
         return descend(node, this)
+
+      } else if (
+        node instanceof ast.If &&
+        node.condition.operator == "!" &&
+        node.condition.expression.TYPE == "Call" &&
+        node.condition.expression.expression.property == "getOwnPropertyDescriptor" &&
+        node.condition.expression.args.length > 1 &&
+        node.condition.expression.args[0].TYPE == "SymbolRef" &&
+        node.condition.expression.args[0].name == "Module"
+      ) {
+        // Strip
+        // if (!Object.getOwnPropertyDescriptor(Module, "ENV")) Module["ENV"] = function() {
+        //   abort("'ENV' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS");
+        // };
+        return new ast.EmptyStatement()
       }
       // else console.log(node.TYPE)
 
       return node
     }) // uglify.TreeTransformer
   ) // newTopLevel = toplevel.transform
-
 
 
   // Generate var definitions for all WASM API exports.
