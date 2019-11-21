@@ -25,6 +25,11 @@ options:
   -inline-sourcemap  Store source map inline instead of <outfile>.map
   -nosourcemap       Do not generate a source map
   -noconsole         Silence all print calls (normally routed to console)
+  -D<name>[=<val>]   Define constant global <name>. <val> defaults to `true`.
+
+Predefined constants: (can be overridden)
+  -DDEBUG= `true` when -g or -debug is set, otherwise `false`
+
 ```
 
 ### Example

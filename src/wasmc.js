@@ -20,6 +20,8 @@ const opts = {
   "inline-sourcemap": false,
   nosourcemap: false,
   noconsole: false,  // silence all print calls (normally routed to console)
+
+  globalDefs: {},  // -Dname=val
 }
 
 const args = process.argv.splice(2)
@@ -32,15 +34,20 @@ for (let i = 0; i < args.length; i++) {
       // -- ends arguments
       break
     }
-    let [k, v] = arg.replace(/^\-+/, '').split('=')
-    if (v === undefined) {
-      v = true
-    }
-    if (!(k in opts)) {
-      console.error(`unknown option ${arg.split('=')[0]}`)
-      usage()
+    if (arg.substr(0,2) == '-D') {
+      let [k, v] = arg.substr(2).split('=')
+      opts.globalDefs[k] = v ? (0,eval)('0||'+v) : true
     } else {
-      opts[k] = v
+      let [k, v] = arg.replace(/^\-+/, '').split('=')
+      if (v === undefined) {
+        v = true
+      }
+      if (!(k in opts)) {
+        console.error(`unknown option ${arg.split('=')[0]}`)
+        usage()
+      } else {
+        opts[k] = v
+      }
     }
     args.splice(i, 1)
     i--
@@ -49,7 +56,6 @@ for (let i = 0; i < args.length; i++) {
 
 function usage() {
   console.error(`
-
   wasmc ${WASMC_VERSION} WebAssembly module bundler.
   usage: wasmc [options] <emccfile> <wrapperfile>
   options:
@@ -67,8 +73,12 @@ function usage() {
     -inline-sourcemap  Store source map inline instead of <outfile>.map
     -nosourcemap       Do not generate a source map
     -noconsole         Silence all print calls (normally routed to console)
+    -D<name>[=<val>]   Define constant global <name>. <val> defaults to \`true\`.
 
-  `.trim().replace(/^\s\s/gm, ''))
+  Predefined constants: (can be overridden)
+    -DDEBUG= \`true\` when -g or -debug is set, otherwise \`false\`
+
+  `.trim().replace(/^  /gm, '') + "\n")
   process.exit(1)
 }
 
@@ -102,6 +112,10 @@ if (!outfile) {
 const modname = Path.basename(outfile, Path.extname(outfile))
 
 function main() {
+  if (!("DEBUG" in opts.globalDefs)) {
+    opts.globalDefs["DEBUG"] = !!opts.debug
+  }
+
   rollupWrapper(wrapperfile).then(r => {
     if (opts.verbose) {
       console.log(`[info] JS exports:`, r.exports.join(', '))
@@ -687,11 +701,19 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
   //   post: 'return Module.asm})()',
   // }
 
-  const wrapperStart = opts.esmod ? '' :
-    '(function(exports){"use strict";\n'
+  let wrapperStart = opts.esmod ? '' :
+    `(function(exports){"use strict";\n`
 
   const wrapperEnd = opts.esmod ? '' :
     `})(typeof exports!='undefined'?exports:this["${modname}"]={})`
+
+  if (opts.debug) {
+    // define globals as variables
+    let names = Object.keys(opts.globalDefs)
+    wrapperStart += "const " + names.map((k, i) =>
+      `${k} = ${JSON.stringify(opts.globalDefs[k])}${i == names.length-1 ? ";" : ","} // -D${k}`
+    ).join("\n      ") + "\n"
+  }
 
   const enclosure = getModuleEnclosure(modname)
 
@@ -699,19 +721,21 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
     ecma,
     toplevel: !opts.debug,
     compress: opts.debug ? false : {
-      global_defs: { "DEBUG": false },
-      passes: 1,
+      global_defs: opts.globalDefs,
+      passes: 2,
       toplevel: true,
       top_retain: ['exports'],
       hoist_vars: true,
       keep_classnames: true,
+      dead_code: true,
+      evaluate: true,
     },
-    mangle: false/*opts.debug ? false : {
+    mangle: opts.debug ? false : {
       toplevel: true,
       keep_classnames: true,
       // reserved: [],
       // keep_quoted: true,
-    }*/,
+    },
     output: {
       beautify: opts.debug || opts.pretty,
       indent_level: 2,

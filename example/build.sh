@@ -32,7 +32,7 @@ if [ "$1" == "-local" ]; then
 
   # Bundle, combining your javascript and wasm code
   echo "wasmc -syncinit out/foo.js foo.js"
-  ../wasmc -syncinit out/foo.js foo.js
+  ../wasmc -DHELLO_WORLD="[1, 2+5, '3']" -syncinit out/foo.js foo.js
 
   # Run via nodejs
   echo 'Testing in nodejs: require("./out/foo.js").hello()'
