@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash -e
 #
 # This script builds the example project using Emscripten via docker.
 # Nothing else than Docker is required for this to work.
@@ -8,31 +8,58 @@
 # If you have Emscripten and Nodejs installed locally, you can build
 # directly, without Docker, with the -local flag: `build.sh -local`
 #
-set -e
 cd "$(dirname "$0")"
 
 if [ "$1" == "-local" ]; then
+  shift
   mkdir -p out
 
+  # flags
+  emcc_flags=()
+  wasmc_flags=()
+  if [ "$1" == "-O" ]; then
+    shift
+    emcc_flags+=( -Oz )
+  else
+    emcc_flags+=( -g )
+    wasmc_flags+=( -g )
+  fi
+
+  if [ "$1" == "-pretty" ]; then
+    wasmc_flags+=( $1 )
+    shift
+  fi
+
   # compile C to WASM
-  echo "emcc" *.c "-> out/.tmp/foo.js"
+  echo "emcc" *.c "-> out/foo.js"
   emcc \
-    -Os \
     -s WASM=1 \
     -s NO_EXIT_RUNTIME=1 \
     -s NO_FILESYSTEM=1 \
     -s ABORTING_MALLOC=0 \
     -s ALLOW_MEMORY_GROWTH=1 \
+    -s RESERVED_FUNCTION_POINTERS=1 \
     -s DISABLE_EXCEPTION_CATCHING=1 \
-    -s ERROR_ON_UNDEFINED_SYMBOLS=1 \
-    *.c -o out/foo.js
+    --js-library lib.js \
+    --js-opts 0 \
+    --closure 0 \
+    --minify 0 \
+    "${emcc_flags[@]}" \
+    -o out/foo.js \
+    *.c
 
   cp -a out/foo.js out/emcc.foo.js
-  cp -a out/foo.wasm out/emcc.foo.wasm
+  ls -lF out/foo.wasm
 
   # Bundle, combining your javascript and wasm code
   echo "wasmc -syncinit out/foo.js foo.js"
-  ../wasmc -DHELLO_WORLD="[1, 2+5, '3']" -syncinit out/foo.js foo.js
+  ../wasmc \
+    "${wasmc_flags[@]}" \
+    -target=node \
+    -DHELLO_WORLD="[1, 2+5, '3']" \
+    -syncinit \
+    out/foo.js \
+    foo.js
 
   # Run via nodejs
   echo 'Testing in nodejs: require("./out/foo.js").hello()'
@@ -40,7 +67,6 @@ if [ "$1" == "-local" ]; then
 
   # if we did not provide -syncinit then we'd have to wait for the
   # "ready" promise before calling functions:
-  # echo 'Testing in nodejs via require("./out/foo.js")'
   # node -e 'require("./out/foo.js").ready.then(m => m.hello())'
 
 else
@@ -50,5 +76,6 @@ else
     exit 1
   fi
   docker run --rm -t -v "$PWD/..:/src" rsms/emsdk:latest \
-    /bin/bash example/build.sh -local
+    /bin/bash example/build.sh -local "$@"
+  wasm2wat out/foo.wasm -o out/foo.wast
 fi
