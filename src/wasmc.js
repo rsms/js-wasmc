@@ -8,6 +8,14 @@ import uglify from '../deps/build/uglify-es.js'
 const fs = require('fs')
 const Path = require('path')
 
+const assert = DEBUG ? function(condition, message) {
+  if (!condition) {
+    let e = new Error(message || "assertion failed")
+    e.name = "AssertionError"
+    throw e
+  }
+} : function(){}
+
 const opts = {
   h: false, help: false,
   g: false, debug: false,
@@ -20,6 +28,9 @@ const opts = {
   "inline-sourcemap": false,
   nosourcemap: false,
   noconsole: false,  // silence all print calls (normally routed to console)
+  nostdout: false,   // silence output to stdout (normally routed to console.log)
+  nostderr: false,   // silence output to stderr (normally routed to console.error)
+  target: null,
 
   globalDefs: {},  // -Dname=val
 }
@@ -73,10 +84,20 @@ function usage() {
     -inline-sourcemap  Store source map inline instead of <outfile>.map
     -nosourcemap       Do not generate a source map
     -noconsole         Silence all print calls (normally routed to console)
+    -nostderr          Silence output to stdout (normally routed to console.log)
+    -nostdout          Silence output to stderr (normally routed to console.error)
     -D<name>[=<val>]   Define constant global <name>. <val> defaults to \`true\`.
+    -target=<target>   Build only for <target>. Sets a set of -D definitions to
+                       include only code required for the target. Generates
+                       smaller output but is less portable.
+
+  Available <target> values:
+    node    NodeJS-like environments
+    web     Web browser
+    worker  Web worker
 
   Predefined constants: (can be overridden)
-    -DDEBUG= \`true\` when -g or -debug is set, otherwise \`false\`
+    -DDEBUG    \`true\` when -g or -debug is set, otherwise \`false\`
 
   `.trim().replace(/^  /gm, '') + "\n")
   process.exit(1)
@@ -111,16 +132,63 @@ if (!outfile) {
 
 const modname = Path.basename(outfile, Path.extname(outfile))
 
+
+function targetDefs(target) {
+  switch (target) {
+    case "node": return {
+      WASMC_IS_NODEJS_LIKE:  true,
+      ENVIRONMENT_IS_WEB:    false,
+      ENVIRONMENT_IS_WORKER: false,
+      ENVIRONMENT_IS_NODE:   true,
+      ENVIRONMENT_HAS_NODE:  true,
+      ENVIRONMENT_IS_SHELL:  false,
+    }
+    case "web": return {
+      WASMC_IS_NODEJS_LIKE:  false,
+      ENVIRONMENT_IS_WEB:    true,
+      ENVIRONMENT_IS_WORKER: false,
+      ENVIRONMENT_IS_NODE:   false,
+      ENVIRONMENT_HAS_NODE:  false,
+      ENVIRONMENT_IS_SHELL:  false,
+    }
+    case "worker": return {
+      WASMC_IS_NODEJS_LIKE:  false,
+      ENVIRONMENT_IS_WEB:    false,
+      ENVIRONMENT_IS_WORKER: true,
+      ENVIRONMENT_IS_NODE:   false,
+      ENVIRONMENT_HAS_NODE:  false,
+      ENVIRONMENT_IS_SHELL:  false,
+    }
+    default:
+      console.error(`wasmc: invalid -target ${JSON.stringify(target)}`)
+      process.exit(1)
+
+    // node    NodeJS-like environments
+    // web     Web browser
+    // worker  Web worker
+  }
+}
+
+
 function main() {
   if (!("DEBUG" in opts.globalDefs)) {
     opts.globalDefs["DEBUG"] = !!opts.debug
+  }
+
+  if (opts.target) {
+    let defs = targetDefs(opts.target)
+    Object.keys(defs).forEach(k => {
+      if (!(k in opts.globalDefs)) {
+        opts.globalDefs[k] = defs[k]
+      }
+    })
   }
 
   rollupWrapper(wrapperfile).then(r => {
     if (opts.verbose) {
       console.log(`[info] JS exports:`, r.exports.join(', '))
     }
-    compileBundle(r.code, r.map.toString()/*, r.exports*/)
+    compileBundle(r.code, r.map, r.map.toString()/*, r.exports*/)
   }).catch(err => {
     let file = err.filename || (err.loc && err.loc.file) || null
     let line = err.line || (err.loc && err.loc.line) || 0
@@ -182,23 +250,42 @@ function mkvardef(varcons, nameAndValues) {
 }
 
 
-let stripFunsWithName = new Set([
-  !opts.debug ? 'assert' : null,
+let stripTopLevelFunDefs = new Set([
+  // we provide our own versions of these
+  'assert',
+  'abort',
 ].filter(v => !!v))
 
-let stripFunsWithPrefix = new Set([
+let stripTopLevelFunDefsPrefix = new Set([
   'nullFunc_',
 ])
 
-let stripDefsWithName = new Set([
-  // !opts.debug ? 'err' : null,
-].filter(v => !!v))
+const stripTopLevelVarDefs = new Set([
+  // we provide our own versions of these
+  "out",
+  "err",
+])
 
-function shouldStripFunNamed(name) {
-  if (stripFunsWithName.has(name)) {
+const wasmcSourceFileNames = {
+  "<wasmcpre>": 1,
+  "<wasmcmid>": 1,
+  "<wasmcpost>": 1,
+}
+
+// let stripDefsWithName = new Set([
+//   // !opts.debug ? 'err' : null,
+// ].filter(v => !!v))
+
+function shouldStripTopLevelFunNamed(name, file) {
+  if (file in wasmcSourceFileNames) {
+    // never strip stuff from our pre and post code
+    return false
+  }
+  if (stripTopLevelFunDefs.has(name)) {
+    // console.log(`strip fun ${name} (by name) file ${file}`)
     return true
   }
-  for (let prefix of stripFunsWithPrefix) {
+  for (let prefix of stripTopLevelFunDefsPrefix) {
     if (name.startsWith(prefix)) {
       return true
     }
@@ -206,31 +293,143 @@ function shouldStripFunNamed(name) {
   return false
 }
 
+// set to print debugging info about AST transformation
+const DEBUG_AST_TR = DEBUG && false
+
+
+// [wasmc_imports start]
+// let wasmc_imports = null  // :ast.Object|null
+// let wasmImportNameMap = new Map()  // maps source names to mangled runtime names
+// [wasmc_imports end]
+
 
 function transformEmccAST(toplevel) {
   let updateAPIFun = null
   let ModuleObj = null
   let apiEntries = new Map()
-  let wasmcAbort = null
+  let didAddImports = false
 
   const dummyLoc = {file:"<wasmpre>",line:0,col:0}
 
-  let newTopLevel = toplevel.transform(new uglify.TreeTransformer(
-    function(node, descend, inList) {
+  let stack = [toplevel]
+  let parent = toplevel
+  let dbg = DEBUG_AST_TR ? function() {
+    console.log(
+      '[tr]' +
+      ("                                                        ".substr(0, stack.length * 2)),
+      ...arguments
+    )
+  } : function(){}
 
-      if (node instanceof ast.Var) {
+  let visited = new Set()
+
+  let newTopLevel = toplevel.transform(new uglify.TreeTransformer(
+    function (node, descend1, inList) {
+      if (visited.has(node)) {
+        return node
+      }
+      visited.add(node)
+
+      function descend(n, ctx) {
+        dbg(`> ${n.TYPE}`)
+        stack.push(node)
+        parent = node
+        let res = descend1(n, ctx)
+        stack.pop(node)
+        parent = stack[stack.length - 1]
+        // dbg(`descend return-from ${n.TYPE}`)
+        return res
+      }
+
+      // dbg("visit", node.TYPE)
+
+      if (node instanceof ast.Toplevel) {
+        return descend(node, this)
+      }
+
+      let parentIsToplevel = parent.TYPE == "Toplevel"
+
+      // if (parent.TYPE != "Toplevel") {
+      //   dbg("x visit", node.TYPE)
+
+      //   if (
+      //     node instanceof ast.SimpleStatement &&
+      //     node.body instanceof ast.Assign &&
+      //     node.body.operator == "="
+      //   ) {
+      //     let {right,left} = node.body
+      //     if (left.TYPE == "SymbolRef") {
+      //       // case: NAME = <right>
+      //       if (left.name in opts.globalDefs) {
+      //         dbg(`strip use of gdef assignment ${left.name} in ${left.start.file}`,
+      //           {parent:parent.TYPE})
+      //         return new ast.EmptyStatement()
+      //       }
+      //     }
+      //   }
+
+      //   return node
+      // }
+
+      // [wasmc_imports start]
+      // if (parentIsToplevel && node instanceof ast.Const) {
+      //   if (node.start && node.start.file == "<wasmcpre>") {
+      //     for (let i = 0; i < node.definitions.length; i++) {
+      //       let def = node.definitions[i]
+      //       if (!def.name) {
+      //         continue
+      //       }
+      //       let name = def.name.name
+      //       if (name == "wasmc_imports") {
+      //         assert(def.value.TYPE == "Object")
+      //         wasmc_imports = def.value
+      //       }
+      //     }
+      //   }
+      // } else
+      // [wasmc_imports end]
+
+     if (parentIsToplevel && node instanceof ast.Var) {
 
         for (let i = 0; i < node.definitions.length; i++) {
           let def = node.definitions[i]
           if (!def.name) {
             continue
           }
-          if (stripDefsWithName.has(def.name.name)) {
-            // console.log(`strip def %o`, def.name.name)
-            node.definitions.splice(i, 1)
-            i--
-          } else {
+          let name = def.name.name
 
+          if (name in opts.globalDefs) {
+            // overridden by -D flag -- remove local definition in favor of global definition
+            dbg(`strip var def ${name} in ${def.start.file} (global override)`)
+            node.definitions.splice(i, 1)
+
+          } else if (stripTopLevelVarDefs.has(name)) {
+            dbg(`strip var def ${name} in ${def.start.file} (wasmc)`)
+            return new ast.EmptyStatement()
+
+          // [wasmc_imports start]
+          // } else if (name == "asmLibraryArg") {
+          //   if (def.value.TYPE != "Object") {
+          //     console.error(`wasmc: please report this issue: asmLibraryArg.TYPE!=Object`)
+          //   } else if (!didAddImports) {
+          //     dbg("populate wasmImportNameMap")
+          //     wasmImportNameMap.clear()
+          //     for (let n of def.value.properties) {
+          //       if (n.value.TYPE == "SymbolRef" && n.value.name[0] == "_") {
+          //         wasmImportNameMap.set(n.value.name.substr(1), n.key)
+          //       }
+          //     }
+          //     def.value.properties.push(new ast.Expansion({
+          //       expression: new ast.SymbolVar({ name: "wasmc_imports" })
+          //     }))
+          //     didAddImports = true
+          //   }
+          // [wasmc_imports end]
+
+          // } else if (stripDefsWithName.has(name)) {
+          //   // console.log(`strip def`, name)
+          //   node.definitions.splice(i, 1)
+          } else {
             // Pattern of asm route:
             //
             // var _foo = Module["_foo"] = function() {
@@ -257,7 +456,6 @@ function transformEmccAST(toplevel) {
               def.value.left.expression.name == "Module"
             ) {
               // case: var PROP = Module[PROP] = function() { ... }
-              let name = def.name.name
               let f = def.value.right
               let lastStmt = f.body[f.body.length-1]
               if (lastStmt instanceof ast.Return &&
@@ -290,12 +488,12 @@ function transformEmccAST(toplevel) {
                 }
               }
             } else if (
-              def.name.name.startsWith("real_") &&
+              name.startsWith("real_") &&
               def.value.TYPE == "Sub" &&
               def.value.expression.name == "asm"
             ) {
               // e.g. var real__hello = asm["hello"];
-              // console.log(def.value.TYPE, def.value.property.value)
+              // dbg(def.value.TYPE, def.value.property.value)
               return new ast.EmptyStatement()
             }
 
@@ -305,22 +503,46 @@ function transformEmccAST(toplevel) {
         if (node.definitions.length === 0) {
           return new ast.EmptyStatement()
         }
+      }  // if parentIsToplevel && node instanceof ast.Var
 
 
-      } else if (
+      else if (
         node instanceof ast.SimpleStatement &&
         node.body instanceof ast.Assign &&
-        node.body.operator == "=" &&
-        node.body.right.TYPE == "Function" &&
-        node.body.left.TYPE == "Sub" && node.body.left.expression.name == "asm"  // asm[PROP]
+        node.body.operator == "="
       ) {
-        // e.g.
-        //   asm["hello"] = function() {
-        //     return real__hello.apply(null, arguments);
-        //   };
-        return new ast.EmptyStatement()
+        // assignment
+        let {right,left} = node.body
 
-      } else if (node instanceof ast.Defun && node.name) {
+        if (
+          parentIsToplevel &&
+          left.TYPE == "Sub" &&
+          left.expression.name == "asm" &&
+          right.TYPE == "Function"
+        ) {
+          // e.g.
+          //   asm["hello"] = function() {
+          //     return real__hello.apply(null, arguments);
+          //   };
+          return new ast.EmptyStatement()
+        }
+
+        if (left.TYPE == "SymbolRef") {
+          // case: NAME = <right>
+          if (left.name in opts.globalDefs) {
+            // overridden by -D flag -- remove local definition in favor of global definition
+            // dbg(`strip use of gdef assignment ${left.name} in ${left.start.file}`,
+            //   {parent:parent.TYPE})
+            if (DEBUG && parent.TYPE != "Toplevel") {
+              console.log("TODO: transformer: gdef assignment sub at non-top level")
+            }
+            return new ast.EmptyStatement()
+          }
+        }
+      }  // assignment
+
+
+      else if (parentIsToplevel && node instanceof ast.Defun && node.name) {
         // Function definition
 
         let name = node.name.name
@@ -329,27 +551,19 @@ function transformEmccAST(toplevel) {
         if (name == '__wasmcUpdateAPI') {
           // Save reference to __wasmcUpdateAPI function (patched later)
           updateAPIFun = node
-        } else if (name == "__wasmcAbort") {
-          // rename __wasmcAbort -> abort
-          node.name.name = "abort"
-          wasmcAbort = node
-        } else if (name == 'abort' && node !== wasmcAbort) {
-          // remove abort implementation from emcc (in favor of __wasmcAbort)
-          return new ast.EmptyStatement()
-          // Note: info is a variable available in the parent scope
-        } else if (!opts.debug && shouldStripFunNamed(name)) {
-          // console.log(`strip fun %o`, name)
+        } else if (shouldStripTopLevelFunNamed(name, node.start && node.start.file)) {
+          // console.log(`strip fun`, name, node.start)
           // node.argnames = []
           // node.body = []
           // node.start = undefined
           // node.end = undefined
           return new ast.EmptyStatement()
         }
+      } // top-level defun with name, e.g. function foo() { ... }
 
-      } else if (node instanceof ast.Toplevel) {
-        return descend(node, this)
 
-      } else if (
+      else if (
+        parentIsToplevel &&
         node instanceof ast.If &&
         node.condition.operator == "!" &&
         node.condition.expression.TYPE == "Call" &&
@@ -367,6 +581,8 @@ function transformEmccAST(toplevel) {
       // else console.log(node.TYPE)
 
       return node
+      // return descend(node, this)
+
     }) // uglify.TreeTransformer
   ) // newTopLevel = toplevel.transform
 
@@ -544,6 +760,138 @@ function wrapSingleExport(node, localName, exportName) {
 // }
 
 
+// [wasmc_imports start]
+/*function transformUserAST(userfile, toplevel) {
+  let error = false
+  let visited = new Set()
+
+  function reportError(msg, pos) {
+    // TODO: look up original source location via `map` (source map object) provided
+    // to compileBundle.
+    console.error(`${pos.file}:${pos.line}:${pos.col}: ${msg}`)
+    error = true
+  }
+
+  if (!wasmc_imports) {
+    console.error(`wasmc: please report this issue: wasmc_imports==null at transformUserAST`)
+    return null
+  }
+
+  const wasmImportFunName = "wasm_function"
+
+  let n = toplevel.transform(new uglify.TreeTransformer(function (node, descend, inList) {
+    if (visited.has(node)) {
+      return node
+    }
+    visited.add(node)
+
+    if (node.TYPE == "Toplevel") {
+      return descend(node, this)
+    }
+
+    if (!node.start || node.start.file != userfile) {
+      return node
+    }
+
+
+    function visitCall(node, localname) {
+      if (node.expression.TYPE != "SymbolRef" || node.expression.name != wasmImportFunName) {
+        return null
+      }
+      let nargs = node.args.length
+      if (nargs != 2) {
+        reportError(`${wasmImportFunName} expects exactly 2 arguments (got ${nargs})`, node.start)
+        return null
+      }
+
+      let namen = node.args[0]
+      if (namen.TYPE != "String") {
+        reportError(
+          `first argument to ${wasmImportFunName} must be a string constant (got ${namen.TYPE})`,
+          namen.start || node.start
+        )
+        return null
+      }
+
+      let name = namen.value
+      let fun = node.args[1]
+
+      if (!localname) {
+        localname = "__wasm_import__" + name.replace(/[^a-zA-Z0-9_]/g, "_")
+      }
+
+      if (fun.TYPE != "Function" && fun.TYPE != "Arrow") {
+        reportError(
+          `second argument to ${wasmImportFunName} must be a function expression`,
+          fun.start || node.start
+        )
+        return null
+      }
+
+      if (fun.is_generator) {
+        reportError(
+          `${wasmImportFunName} does not support generator functions`,
+          fun.start || node.start
+        )
+        return null
+      }
+
+      if (fun["async"]) {
+        reportError(
+          `${wasmImportFunName} does not support async functions`,
+          fun.start || node.start
+        )
+        return null
+      }
+
+      wasmc_imports.properties.push(new ast.ObjectKeyVal({
+        quote: '"',
+        key: wasmImportNameMap.get(name) || name,
+        value: new ast.SymbolVar({ name: localname }),
+      }))
+
+      return new ast.Defun({
+        name: new ast.SymbolDeclaration({
+          name: localname
+        }),
+        argnames: fun.argnames,
+        uses_arguments: fun.uses_arguments,
+        is_generator: false,
+        "async": false,
+        body: fun.body,
+        start: fun.start,
+        end: fun.end,
+      })
+    }
+
+
+    if (node.TYPE == "Let" || node.TYPE == "Var" || node.TYPE == "Const") {
+      for (let i = 0; i < node.definitions.length; i++) {
+        let def = node.definitions[i]
+        if (def.value.TYPE == "Call") {
+          let n = visitCall(def.value, def.name.name)
+          if (n) {
+            if (node.definitions.length != 1) {
+              reportError(`use of ${wasmImportFunName} as expression is not supported`, def.start)
+              return node
+            }
+            return n
+          }
+        }
+      }
+    }
+
+    if (node.TYPE == "SimpleStatement" && node.body.TYPE == "Call") {
+      return visitCall(node.body) || node
+    }
+
+    return node
+  })) // newTopLevel = toplevel.transform
+  return error ? null : n
+}*/
+// [wasmc_imports end]
+
+
 function getModuleEnclosure(modname) {
 
   let preRun = '', postRun = ''
@@ -566,20 +914,56 @@ function getModuleEnclosure(modname) {
   `.trim().replace(/^\s\s/g, '') : ""
 
 
-  let pre = `
+  let pre = ""
 
-  var IS_NODEJS_LIKE = (
+  if (opts.debug) {
+    // define globals as variables
+    pre += "const " + Object.keys(opts.globalDefs).map(k =>
+      `${k} = ${JSON.stringify(opts.globalDefs[k])}`
+    ).join(",") + ";\n"
+  }
+
+  let printJs = (
+    opts.noconsole ? `emptyfun` :
+    opts.debug     ? `console.log.bind(console,'[${modname}]')` :
+                     `console.log.bind(console)`
+  )
+  let printErrJs = (
+    opts.noconsole ? `emptyfun` :
+    opts.debug     ? `console.error.bind(console,'[${modname}]')` :
+                     `console.error.bind(console)`
+  )
+
+  let abortFunJs = (
+    opts.debug ? `function abort(e) { throw new Error("wasm abort: "+(e.stack||e)) }` :
+                 `function abort() { throw new Error("wasm abort") }`
+  )
+
+  let assertFunJs = (
+    opts.debug ? `
+    function assert(condition, message) {
+      if (!condition) {
+        let e = new Error(message || "assertion failed")
+        e.name = "AssertionError"
+        throw e
+      }
+    }
+    `.trim().replace(/^\s{4}/g, '') :
+    `function assert() {}`
+  )
+
+
+  pre += `
+
+  var WASMC_IS_NODEJS_LIKE = (
     typeof process === "object" &&
+    typeof process.versions === "object" &&
+    typeof process.versions.node === "string" &&
     typeof require === "function"
   )
-  var Path, Fs
-  if (IS_NODEJS_LIKE) {
-    try {
-      Path = require('path')
-      Fs = require('fs')
-    } catch(_) {
-      IS_NODEJS_LIKE = false
-    }
+  let PathModule
+  if (WASMC_IS_NODEJS_LIKE) {
+    try { PathModule = require('path') } catch(_) {}
   }
 
   // clear module to avoid emcc code to export THE ENTIRE WORLD
@@ -590,18 +974,16 @@ function getModuleEnclosure(modname) {
   }
 
   function emptyfun() {}
-
-  function __wasmcAbort(reason) {
-    console.error("[wasm] " + (reason.stack || reason));
-  }
+  ${abortFunJs}
+  ${assertFunJs}
 
   function __wasmcUpdateAPI() {}
 
   var Module = {
     preRun: [${preRun}],
     postRun: [${postRun}],
-    print: console.log.bind(console),
-    printErr: console.error.bind(console),
+    print:    ${printJs},
+    printErr: ${printErrJs},
     ${instantiateWasm}
   }
 
@@ -615,29 +997,29 @@ function getModuleEnclosure(modname) {
     }
   })
 
-
-  if (IS_NODEJS_LIKE) {
+  if (WASMC_IS_NODEJS_LIKE && PathModule) {
     Module.locateFile = function(name) {
-      return Path.join(__dirname, name)
+      return PathModule.join(__dirname, name)
     }
   }
 
 
-  `.trim().replace(/^\s{2}/g, '')
+  // make print function available in module namespace
+  const print = ${opts.noconsole ? "emptyfun" : `Module.print`};
+  const out = ${opts.nostdout ? "emptyfun" : `print`};
+  const err = ${(opts.noconsole || opts.nostderr) ? "emptyfun" : `Module.printErr`};
 
-  if (opts.noconsole) {
-    pre += `
-    function out(){}
-    Module['print'] = emptyfun;
-    Module['printErr'] = emptyfun;
-    `.trim().replace(/^\s{4}/g, '')
-  } else if (opts.debug) {
-    // prepend module name in debug builds
-    pre += `
-    Module['print'] = function(msg) { console.log('[${modname}] ' + msg) };
-    Module['printErr'] = function(msg) { console.error('[${modname}] ' + msg) };
-    `.trim().replace(/^\s{4}/g, '')
-  }
+  `.trim().replace(/^\s{2}/g, '') + "\n"
+
+  // wasmc_imports was an attempt at providing a better API than emscripten's
+  // --js-library for declaring WASM imports.
+  //
+  // // populated by wasm_function
+  // const wasmc_imports = {}
+  // // catch misuse
+  // function wasm_function(name, f) {
+  //  throw new Error("wasm_function can only be used at the top level of a JS module")
+  // }
 
 
   if (opts.embed) {
@@ -666,9 +1048,6 @@ function getModuleEnclosure(modname) {
     orig_module = undefined
   }
 
-  // Alias Module.asm as asm for convenience
-  // const asm = Module.asm
-
   `.trim().replace(/^\s{2}/g, '')
 
 
@@ -695,11 +1074,7 @@ function getEmccFileSource(emccfile) {
 }
 
 
-function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
-  // const emccWrapper = {
-  //   pre: 'const asm = (()=>{\n',
-  //   post: 'return Module.asm})()',
-  // }
+function compileBundle(wrapperCode, map, wrapperMapJSON /*, exportedNames*/) {
 
   let wrapperStart = opts.esmod ? '' :
     `(function(exports){"use strict";\n`
@@ -707,15 +1082,9 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
   const wrapperEnd = opts.esmod ? '' :
     `})(typeof exports!='undefined'?exports:this["${modname}"]={})`
 
-  if (opts.debug) {
-    // define globals as variables
-    let names = Object.keys(opts.globalDefs)
-    wrapperStart += "const " + names.map((k, i) =>
-      `${k} = ${JSON.stringify(opts.globalDefs[k])}${i == names.length-1 ? ";" : ","} // -D${k}`
-    ).join("\n      ") + "\n"
-  }
-
   const enclosure = getModuleEnclosure(modname)
+
+  let pretty = opts.pretty || opts.debug
 
   let options = {
     ecma,
@@ -729,20 +1098,24 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
       keep_classnames: true,
       dead_code: true,
       evaluate: true,
+      drop_console: opts.noconsole,
+      pure_funcs: [
+        "getNativeTypeSize",
+      ],
     },
-    mangle: opts.debug ? false : {
+    mangle: pretty ? false : {
       toplevel: true,
       keep_classnames: true,
       // reserved: [],
       // keep_quoted: true,
     },
     output: {
-      beautify: opts.debug || opts.pretty,
+      beautify: pretty,
       indent_level: 2,
       preamble: wrapperStart,
     },
     sourceMap: opts.nosourcemap ? false : {
-      content: wrapperMap,
+      content: wrapperMapJSON,
     }
   }
 
@@ -750,8 +1123,8 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
   // Note: uglify.minify takes an unordered object for muliple files.
   let srcfiles = [
     enclosure.pre && ['<wasmcpre>', enclosure.pre],
-    [emccfile, getEmccFileSource(emccfile) + enclosure.mid],
-    // enclosure.mid && ['<wasmcmid>', enclosure.mid],
+    [emccfile, getEmccFileSource(emccfile)],
+    enclosure.mid && ['<wasmcmid>', enclosure.mid],
     [wrapperfile, wrapperCode],
     enclosure.post && ['<wasmcpost>', enclosure.post],
   ].filter(v => !!v)
@@ -770,6 +1143,17 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
       //   'asm'
       // )
     }
+
+    // [wasmc_imports start]
+    // else if (name == wrapperfile) {
+    //   let toplevel2 = transformUserAST(wrapperfile, options.parse.toplevel)
+    //   if (!toplevel2) {
+    //     // There were errors
+    //     process.exit(1)
+    //   }
+    //   options.parse.toplevel = toplevel2
+    // }
+    // [wasmc_imports end]
   }
 
   let r
@@ -782,7 +1166,7 @@ function compileBundle(wrapperCode, wrapperMap /*, exportedNames*/) {
       mangle: false,
       output: {},
       sourceMap: opts.nosourcemap ? false : {
-        content: wrapperMap,
+        content: wrapperMapJSON,
       }
     })
     r = uglify.minify({ a: r.code }, {
