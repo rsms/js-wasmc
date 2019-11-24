@@ -23,7 +23,7 @@ chmod +x wasmc.g
   --format cjs \
   --name wasmc \
   --sourcemap \
-  --intro "const WASMC_VERSION='"$(node -p 'require("./package.json").version')"'" \
+  --intro "const WASMC_VERSION='"$(node -p 'require("./package.json").version')"',DEBUG=$DEBUG;" \
   --banner '#!/usr/bin/env node' \
   $ROLLUP_WATCH
 
