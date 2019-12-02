@@ -1,6 +1,7 @@
 /_*
 **/.DS_Store
 *.g*
+/.wasmc*
 /node_modules
 /deps/build
-/example/out
+/examples/*/build

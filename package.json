@@ -1,13 +1,14 @@
 {
   "name": "wasmc",
   "version": "0.1.6",
-  "description": "Post-Emscripten WASM/ASMJS bundler",
+  "description": "Simplifies building of WebAssembly modules from C and C++",
   "bin": {
     "wasmc": "wasmc"
   },
   "files": [
     "wasmc",
     "wasmc.map",
+    "ninja_bot.js",
     "README.md",
     "LICENSE"
   ],

@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 
 if [ "$1" == "-local" ]; then
   shift
-  mkdir -p out
+  mkdir -p build
 
   # flags
   emcc_flags=()
@@ -31,7 +31,7 @@ if [ "$1" == "-local" ]; then
   fi
 
   # compile C to WASM
-  echo "emcc" *.c "-> out/foo.js"
+  echo "emcc" *.c "-> build/foo.js"
   emcc \
     -s WASM=1 \
     -s NO_EXIT_RUNTIME=1 \
@@ -45,29 +45,29 @@ if [ "$1" == "-local" ]; then
     --closure 0 \
     --minify 0 \
     "${emcc_flags[@]}" \
-    -o out/foo.js \
+    -o build/foo.js \
     *.c
 
-  cp -a out/foo.js out/emcc.foo.js
-  ls -lF out/foo.wasm
+  cp -a build/foo.js build/emcc.foo.js
+  ls -lF build/foo.wasm
 
   # Bundle, combining your javascript and wasm code
-  echo "wasmc -syncinit out/foo.js foo.js"
-  ../wasmc \
+  echo "wasmc -syncinit build/foo.js foo.js"
+  ../../wasmc -Tpackage \
     "${wasmc_flags[@]}" \
     -target=node \
     -DHELLO_WORLD="[1, 2+5, '3']" \
     -syncinit \
-    out/foo.js \
+    build/foo.js \
     foo.js
 
   # Run via nodejs
-  echo 'Testing in nodejs: require("./out/foo.js").hello()'
-  node -e 'require("./out/foo.js").hello()'
+  echo 'Testing in nodejs: require("./build/foo.js").hello()'
+  node -e 'require("./build/foo.js").hello()'
 
   # if we did not provide -syncinit then we'd have to wait for the
   # "ready" promise before calling functions:
-  # node -e 'require("./out/foo.js").ready.then(m => m.hello())'
+  # node -e 'require("./build/foo.js").ready.then(m => m.hello())'
 
 else
   # Build via Docker using an emsdk image
@@ -75,7 +75,6 @@ else
     echo "docker not found in PATH. See https://docker.com/" >&2
     exit 1
   fi
-  docker run --rm -t -v "$PWD/..:/src" rsms/emsdk:latest \
-    /bin/bash example/build.sh -local "$@"
-  wasm2wat out/foo.wasm -o out/foo.wast
+  docker run --rm -t -v "$PWD/../..:/src" rsms/emsdk:latest \
+    /bin/bash examples/custom-package/build.sh -local "$@"
 fi

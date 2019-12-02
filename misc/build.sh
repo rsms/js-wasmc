@@ -4,9 +4,9 @@ cd "$(dirname "$0")/.."
 ./deps/build.sh
 
 DEBUG=false
-ROLLUP_WATCH=
+ROLLUP_ARGS=
 if [[ "$1" == "-w" ]]; then
-  ROLLUP_WATCH=--watch
+  ROLLUP_ARGS=--watch
   DEBUG=true
   shift
 fi
@@ -15,24 +15,39 @@ if [[ "$1" == "-g" ]]; then
   shift
 fi
 
-touch wasmc.g
-chmod +x wasmc.g
 
-./node_modules/.bin/rollup src/wasmc.js \
-  --file wasmc.g \
-  --format cjs \
-  --name wasmc \
-  --sourcemap \
-  --intro "const WASMC_VERSION='"$(node -p 'require("./package.json").version')"',DEBUG=$DEBUG;" \
-  --banner '#!/usr/bin/env node' \
-  $ROLLUP_WATCH
+WASMC_VERSION=$(node -p 'require("./package.json").version')
+if [[ -d .git ]]; then
+  WASMC_VERSION="$WASMC_VERSION+$(git rev-parse --short HEAD)"
+fi
 
-if ! $DEBUG; then
+
+if $DEBUG; then
+  if [ ! -f wasmc.g ]; then
+    touch wasmc.g
+    chmod +x wasmc.g
+  fi
+  ./node_modules/.bin/rollup $ROLLUP_ARGS \
+    -o wasmc.g \
+    --format cjs \
+    --sourcemap inline \
+    --intro "const WASMC_VERSION='$WASMC_VERSION',DEBUG=true;" \
+    --banner '#!/usr/bin/env node' \
+    src/main.js
+
+else
+  ./node_modules/.bin/rollup $ROLLUP_ARGS \
+    -o .wasmc.js \
+    --format cjs \
+    --sourcemap inline \
+    --intro "const WASMC_VERSION='$WASMC_VERSION',DEBUG=false;" \
+    --banner '#!/usr/bin/env node' \
+    src/main.js
 
 # strip comments
 node <<_JS
 let fs = require('fs')
-let s = fs.readFileSync("wasmc.g", "utf8")
+let s = fs.readFileSync(".wasmc.js", "utf8")
 // replace with whitespace and linebreaks to not mess up sourcemap
 s = s.replace(/(?:^|\n\s*)\/\*(?:(?!\*\/).)*\*\//gms, s => {
   let s2 = ""
@@ -45,14 +60,14 @@ s = s.replace(/(?:^|\n\s*)\/\*(?:(?!\*\/).)*\*\//gms, s => {
   }
   return s2
 })
-fs.writeFileSync(".wasmc.o1", s, "utf8")
+fs.writeFileSync(".wasmc.js", s, "utf8")
 _JS
 
   CCOMPILER=$(node -e "process.stdout.write(require('google-closure-compiler/lib/utils').getNativeImagePath())")
   echo "running closure-compiler"
   $CCOMPILER \
     -O=SIMPLE \
-    --js=.wasmc.o1 \
+    --js=.wasmc.js \
     --js_output_file=wasmc \
     --language_in=ECMASCRIPT_2018 \
     --language_out=ECMASCRIPT_2018 \
@@ -62,11 +77,11 @@ _JS
     --package_json_entry_names=esnext:main,browser,main \
     --assume_function_wrapper \
     --create_source_map=wasmc.map \
-    --source_map_input=".wasmc.o1|wasmc.g.map" \
+    --source_map_input=".wasmc.js|.wasmc.js.map" \
     \
     --charset=UTF-8 \
     --output_wrapper="$(printf "#!/usr/bin/env node\n%%output%%\n//#sourceMappingURL=wasmc.map")"
 
-  rm .wasmc.o1
+  rm .wasmc.js
   chmod +x wasmc
 fi
