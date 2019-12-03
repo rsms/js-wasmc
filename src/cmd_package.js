@@ -4,8 +4,9 @@
 //
 import rollup from "../deps/build/rollup.js"
 import uglify from "../deps/build/uglify-es.js"
-import { dlog, assert, stripext, NODE_VERSION_GTE_11_7 } from "./util"
+import { dlog, assert, stripext, statSync, NODE_VERSION_GTE_11_7 } from "./util"
 import { parseopts } from "./parseopts"
+import defaultJsentry from "./default-jsentry"
 
 const fs = require('fs')
 const Path = require('path')
@@ -40,7 +41,7 @@ function usage() {
     -g, -debug         Disable optimizations and include data for debugging.
 
     -o=<file>          Output JS file. Defaults to <emccfile>.
-    -esmod             Generate ES6 module instead of UMD module
+    -esmod             Generate ES module instead of UMD module.
     -ecma=<version>    ES target version. Defaults to 8 (ES2017). Range: 5–8.
     -embed             Embed WASM code in JS file.
     -syncinit          Load & initialize WASM module on main thread.
@@ -197,8 +198,8 @@ export function packageModule(c, options) {  // :Promise<jscode>
   }
 
   return rollupWrapper(c, opts).then(r => {
-    dlog({ "map.sources": r.map.sources, imports: r.imports, exports: r.exports })
-    return compileBundle(opts, r.code, r.map, r.map.toString()/*, r.exports*/)
+    // dlog({ "map.sources": r.map.sources, imports: r.imports, exports: r.exports })
+    return compileBundle(opts, r.code, r.map.toString()/*, r.exports*/)
   }).catch(err => {
     let file = err.filename || (err.loc && err.loc.file) || null
     let line = err.line || (err.loc && err.loc.line) || 0
@@ -226,26 +227,45 @@ export function packageModule(c, options) {  // :Promise<jscode>
 }
 
 
-function rollupWrapper(c, opts) {
-  // do not try to embed these libraries
-  const nodeJsLibs = [
-    // nodejs builtins
-    "assert",         "globals",      "readline",
-    "async_hooks",    "http",         "repl",
-    "base",           "http2",        "stream",
-    "buffer",         "https",        "string_decoder",
-    "child_process",  "index",        "timers",
-    "cluster",        "inspector",    "tls",
-    "console",        "module",       "trace_events",
-    "constants",      "net",          "tty",
-    "crypto",         "os",           "url",
-    "dgram",          "path",         "util",
-    "dns",            "perf_hooks",   "v8",
-    "domain",         "process",      "vm",
-    "events",         "punycode",     "worker_threads",
-    "fs",             "querystring",  "zlib",
-  ]
+let _defaultJsentryCJS = ""
 
+function getDefaultJsentryCJS() {
+  if (!_defaultJsentryCJS) {
+    _defaultJsentryCJS = defaultJsentry.replace(/export default/, "module.exports =")
+  }
+  return _defaultJsentryCJS
+}
+
+
+const nodeJsLibs = [
+  // nodejs builtins
+  "assert",         "globals",      "readline",
+  "async_hooks",    "http",         "repl",
+  "base",           "http2",        "stream",
+  "buffer",         "https",        "string_decoder",
+  "child_process",  "index",        "timers",
+  "cluster",        "inspector",    "tls",
+  "console",        "module",       "trace_events",
+  "constants",      "net",          "tty",
+  "crypto",         "os",           "url",
+  "dgram",          "path",         "util",
+  "dns",            "perf_hooks",   "v8",
+  "domain",         "process",      "vm",
+  "events",         "punycode",     "worker_threads",
+  "fs",             "querystring",  "zlib",
+]
+
+
+function rollupWrapper(c, opts) {
+
+  if (!opts.jsentryfile) {
+    return Promise.resolve({
+      code: opts.esmod ? defaultJsentry : getDefaultJsentryCJS(),
+      map: '{"version":3,"sources":["wasmc:default"],"mappings":""}',
+    })
+  }
+
+  // do not try to embed these libraries
   let externalLibs = (
     opts.target == "node" || opts.target == "node-legacy" ? nodeJsLibs :
     []
@@ -270,6 +290,7 @@ function rollupWrapper(c, opts) {
     return r.generate({
       format: opts.esmod ? 'es' : 'cjs',
       sourcemap: true,
+      sourcemapExcludeSources: true,
       // sourcemapFile: 'bob',
       // name: modname,
       // banner: '((Module)=>{',
@@ -904,7 +925,7 @@ export function gen_WASM_DATA(buf, target) {
 }
 
 
-function compileBundle(opts, wrapperCode, map, wrapperMapJSON /*, exportedNames*/) {
+function compileBundle(opts, wrapperCode, wrapperMapJSON) {
 
   let wrapperStart = opts.esmod ? '' :
     `(function(exports){"use strict";\n`
@@ -950,6 +971,7 @@ function compileBundle(opts, wrapperCode, map, wrapperMapJSON /*, exportedNames*
       beautify: pretty,
       indent_level: 2,
       preamble: wrapperStart,
+      comments: !!opts.debug,
     },
     sourceMap: opts.nosourcemap ? false : {
       content: wrapperMapJSON,

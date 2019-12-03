@@ -16,9 +16,47 @@ if [[ "$1" == "-g" ]]; then
 fi
 
 
+function closure-compiler {
+  if [[ -z $CCOMPILER ]]; then
+    CCOMPILER=$(node -e "process.stdout.write(require('google-closure-compiler/lib/utils').getNativeImagePath())")
+  fi
+  "$CCOMPILER" "$@"
+}
+
+
 WASMC_VERSION=$(node -p 'require("./package.json").version')
 if [[ -d .git ]]; then
   WASMC_VERSION="$WASMC_VERSION+$(git rev-parse --short HEAD)"
+fi
+
+
+# prerequisites
+if [[ misc/ninjabot.js -nt src/ninjabot-program.js ]]; then
+  echo "closure-compiler misc/ninjabot.js -> src/ninjabot-program.js"
+  closure-compiler \
+    -O=SIMPLE \
+    --js=misc/ninjabot.js \
+    --js_output_file=misc/.ninjabot.js \
+    --language_in=ECMASCRIPT_2018 \
+    --language_out=ECMASCRIPT_2018 \
+    --env=CUSTOM \
+    --module_resolution=NODE \
+    --package_json_entry_names=esnext:main,browser,main \
+    --assume_function_wrapper \
+    --charset=UTF-8 \
+    --output_wrapper="$(printf "#!/usr/bin/env node\n%%output%%")"
+
+node <<_JS
+let fs = require('fs')
+let s = fs.readFileSync("misc/.ninjabot.js", "utf8")
+
+s = "// generated from misc/ninjabot.js by misc/build.sh -- do not edit manually\n" +
+    "export default " + require("util").inspect(s) + "\n";
+
+fs.writeFileSync("src/ninjabot-program.js", s, "utf8")
+_JS
+
+  rm misc/.ninjabot.js
 fi
 
 
@@ -63,9 +101,8 @@ s = s.replace(/(?:^|\n\s*)\/\*(?:(?!\*\/).)*\*\//gms, s => {
 fs.writeFileSync(".wasmc.js", s, "utf8")
 _JS
 
-  CCOMPILER=$(node -e "process.stdout.write(require('google-closure-compiler/lib/utils').getNativeImagePath())")
   echo "running closure-compiler"
-  $CCOMPILER \
+  closure-compiler \
     -O=SIMPLE \
     --js=.wasmc.js \
     --js_output_file=wasmc \

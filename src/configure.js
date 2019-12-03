@@ -159,6 +159,13 @@ function generateNinjafile(c, config, ninjaLine1) {
   s += `\n`
   s += `\n`
 
+  // TODO: PCH header with
+  //
+  //   #include <emscripten/emscripten.h>
+  //   #define export EMSCRIPTEN_KEEPALIVE
+  //
+  // See https://clang.llvm.org/docs/PCHInternals.html
+
   let builddirabs = Path.resolve(config.builddir)
   let objfilesByDep = new Map()  // depname => string[]
   let objfileMap = new Map()  // srcfile + key(extras) => objfile
@@ -382,6 +389,14 @@ function loadConfigFile(filename, config) {
 
     m.outfilejs = Path.resolve(config.projectdir, m.out)
     m.outfilewasm = stripext(m.outfilejs) + ".wasm"
+
+    if (m.constants) {
+      if (typeof m.constants != "object") {
+        throw new Error("module 'constants' property must be of type {[key:string]:any}")
+      }
+    } else {
+      m.constants = {}
+    }
 
     // m.__proto__ = Mod.prototype
     config.modules.push(m)

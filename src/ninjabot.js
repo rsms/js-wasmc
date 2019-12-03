@@ -1,4 +1,5 @@
-import { assert, dlog } from "./util"
+import { assert, dlog, statSync, tmpdir } from "./util"
+import ninjabotProgramCode from "./ninjabot-program"
 
 const net = require("net")
 const fs = require("fs")
@@ -7,35 +8,40 @@ const child_process = require("child_process")
 
 const wasmcdir = __dirname;
 
-// NinjaBot spawns a docker instance running rsms/emsdk:latest with ninja_bot.js
+
+// NinjaBot spawns a docker instance running rsms/emsdk:latest with misc/ninjabot.js
 // which communicates with this process with JSON over stdio.
-// The "remote" ninja_bot.js script manages ninja processes as requests arrive.
+// The "remote" misc/ninjabot.js script manages ninja processes as requests arrive.
 // This way we ware able to perform many calls to ninja without having to wait
 // for docker to start every time.
 // Importantly, this causes a big speed improvement for "watch" mode.
 //
 export class NinjaBot {
-  constructor(projectdir) {
-    projectdir = Path.resolve(projectdir)
-    this.projectdir = projectdir
+  constructor(projectdir, builddir) {
+    this.projectdir = Path.resolve(projectdir)
+    this.builddir = Path.resolve(builddir)
     this.started = false
     this.dockerProc = null
     this.respawnTimer = null
     this.sendq = []
     this.nextRequestId = 0
     this.requestsInFlight = new Map()  // keyed by rid
+
+    // convert builddir to be relative to projectdir since ninja is running in projectdir
+    this.relbuilddir = Path.relative(this.projectdir, this.builddir)
+    if (this.relbuilddir.startsWith("../")) {
+      throw new Error(`builddir ${builddir} is outside projectdir ${this.projectdir}`)
+    }
   }
 
 
-  build(builddir, targets, clean) { // Promise<didWork:bool>
-    builddir = this.fmtBuildDir(builddir)
-    return this.request("build", { dir: builddir, targets, clean }).then(r => r.result)
+  build(targets, clean) { // Promise<didWork:bool>
+    return this.request("build", { dir: this.relbuilddir, targets, clean }).then(r => r.result)
   }
 
 
-  clean(builddir) { // Promise<void>
-    builddir = this.fmtBuildDir(builddir)
-    return this.request("clean", { dir: builddir })
+  clean() { // Promise<void>
+    return this.request("clean", { dir: this.relbuilddir })
   }
 
 
@@ -44,16 +50,6 @@ export class NinjaBot {
       this.started = true
       this.dockerSpawn(quiet)
     }
-  }
-
-
-  fmtBuildDir(builddir) {
-    // convert builddir to be relative to projectdir since ninja is running in projectdir
-    builddir = Path.relative(this.projectdir, Path.resolve(builddir))
-    if (builddir.startsWith("../")) {
-      throw new Error(`builddir ${builddir} is outside projectdir ${this.projectdir}`)
-    }
-    return builddir
   }
 
 
@@ -104,6 +100,14 @@ export class NinjaBot {
   dockerSpawn(quiet) {
     clearTimeout(this.respawnTimer)
 
+    // make sure ninjabot program is available
+    const ninjabotProgramName = "_wasmc-ninjabot.js"
+    let ninjabotProgram = Path.join(this.builddir, ninjabotProgramName)
+    let st = statSync(ninjabotProgram)
+    if (!st || (DEBUG && statSync(__filename).mtimeMs > st.mtimeMs)) {
+      fs.writeFileSync(ninjabotProgram, ninjabotProgramCode, "utf8")
+    }
+
     let args = [
       "run",
       "--rm",
@@ -114,10 +118,10 @@ export class NinjaBot {
       "-a", "stdin", "-a", "stdout", "-a", "stderr", "-i",
 
       "-v", this.projectdir + ":/src",
-      "-v", wasmcdir + ":/wasmc:ro",
+      // "-v", Path.dirname() + ":/wasmc-tmp:ro",
 
       "rsms/emsdk:latest",
-      "node", "/wasmc/ninja_bot.js",
+      "node", this.relbuilddir + "/" + ninjabotProgramName,
     ]
 
     // dlog("docker", args.join(" "))
@@ -148,16 +152,16 @@ export class NinjaBot {
         // silence this common message, except for in DEBUG builds
         dlog(line)
       } else if (
-        line.startsWith("shared:ERROR: '/emsdk/upstream/bin/clang") ||
-        line.startsWith("ninja: build stopped:") ||
-        line.startsWith("Cleaning...") ||
-        (quiet && (
-          line.startsWith("[") ||
-          line.startsWith("emcc -")
-        ))
+        !(
+          line.startsWith("shared:ERROR: '/emsdk/upstream/bin/clang") ||
+          line.startsWith("ninja: build stopped:") ||
+          line.startsWith("Cleaning...") ||
+          (quiet && (
+            line.startsWith("[") ||
+            line.startsWith("emcc -")
+          ))
+        )
       ) {
-        // ignore
-      } else {
         // if (!line.startsWith("ninja:")) {
         //   line = "ninja: " + line
         // }
@@ -165,17 +169,20 @@ export class NinjaBot {
       }
     }
 
+    p.on('exit', code => {
+      console.log(`docker process exited with code ${code} -- respawning...`)
+      this.dockerProc = null
+      if (code != 0) {
+        // TODO exponential back-off
+        this.respawnTimer = setTimeout(() => { this.dockerSpawn(quiet) }, 1000)
+      }
+    })
+
     // flush sendq
     for (let s of this.sendq) {
       p.stdin.write(s, "utf8")
     }
     this.sendq = []
-
-    p.on('exit', code => {
-      console.log(`docker process exited with code ${code} -- respawning...`)
-      this.dockerProc = null
-      respawnTimer = setTimeout(dockerSpawn, 1000)  // TODO exponential back-off
-    })
   }
 
 } // class

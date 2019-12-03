@@ -1,5 +1,6 @@
 const fs = require('fs')
 const Path = require('path')
+const os = require("os")
 const inspect = require('util').inspect
 import { glob } from "./glob"
 
@@ -26,6 +27,16 @@ export const NODE_VERSION_10_12 = 0x000A0C00 // parseVersion("10.12.0")
 export const NODE_VERSION_GTE_10_12 = NODE_VERSION >= NODE_VERSION_10_12
 export const NODE_VERSION_11_7  = 0x000B0700 // parseVersion("11.7.0")
 export const NODE_VERSION_GTE_11_7 = NODE_VERSION >= NODE_VERSION_11_7
+
+
+let _tmpdir
+export function tmpdir() {
+  if (!_tmpdir) {
+    _tmpdir = Path.join(os.tmpdir(), "wasmc-" + WASMC_VERSION)
+    fs.mkdir(_tmpdir, ()=>{})
+  }
+  return _tmpdir
+}
 
 
 export function repr(v, depth) {

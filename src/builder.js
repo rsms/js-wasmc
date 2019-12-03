@@ -48,14 +48,14 @@ export async function build(c, allmodules /* = c.config.modules*/ ) { // :Promis
     dlog(">> build/ninja", dirtyWasmMods.map(m => m.name))
     let targets = dirtyWasmMods.map(m => m.wasmfile)
     let builddirabs = Path.resolve(projectdir, c.config.builddir)
-    let ninja = getNinjaBot(c, projectdir)
-    didBuild = await ninja.build(builddirabs, targets, /*clean*/c.force)
+    let ninja = getNinjaBot(c)
+    didBuild = await ninja.build(targets, /*clean*/c.force)
     if (!didBuild) {
       dirtyWasmMods = []
     }
   } else if (c.watch) {
     // warm up ninjabot
-    getNinjaBot(c, projectdir)
+    getNinjaBot(c)
   }
 
   // decide which modules to package
@@ -533,12 +533,14 @@ function checkModSource(c, m) {
 }
 
 
-function getNinjaBot(c, projectdir) {
-  let n = ninjaBotInstances.get(projectdir)
+function getNinjaBot(c) {
+  let builddir = Path.join(c.config.projectdir, c.config.builddir)
+  let key = c.config.projectdir + ":" + builddir
+  let n = ninjaBotInstances.get(key)
   if (!n) {
-    n = new NinjaBot(projectdir)
+    n = new NinjaBot(c.config.projectdir, builddir)
     n.start(c.quiet)
-    ninjaBotInstances.set(projectdir, n)
+    ninjaBotInstances.set(key, n)
   }
   return n
 }
