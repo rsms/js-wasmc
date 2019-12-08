@@ -20,9 +20,10 @@ module({
   },
 })
 
-module({
-  name:    "bar",
-  sources: "src/bar.c",
-  cflags: [ "-Wall" ],
-  lflags: [ "-Wmeow" ],
-})
+// module({
+//   name:    "bar",
+//   sources: "src/bar.c",
+//   cflags: [ "-Wall" ],
+//   // embed:   true,
+//   // lflags: [ "-Wmeow" ],
+// })
