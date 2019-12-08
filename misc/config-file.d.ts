@@ -64,6 +64,9 @@ interface ModuleProps {
 
   // If true, embed the wasm module inside the output javascript file
   embed?: boolean
+
+  // module format. Defaults to "umd". "es" outputs code with import and export statements.
+  format?: "umd" | "es"
 }
 
 
