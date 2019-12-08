@@ -14,6 +14,11 @@
   ],
   "author": "rsms",
   "license": "MIT",
+  "homepage": "https://github.com/rsms/js-wasmc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rsms/js-wasmc.git"
+  },
   "scripts": {
     "build": "./misc/build.sh",
     "build-g": "./misc/build.sh -g",
