@@ -52,10 +52,27 @@ export function configure(c, configfile, projectdir, argv) {
     ninjafile:  "",
     argv:       argv,
 
-    // flags used for both comppiling source files and linking
+    // flags used for both compiling and linking (not used for PCH generation)
     flags: [
-      '-std=c11',
       '-fcolor-diagnostics',  // enable ANSI color output when attached to a TTY
+    ],
+
+    // flags used when compiling source files, in addition to `flags`
+    cflags: [
+      '-std=c11',
+      // '-fno-rtti',
+      // '-fno-exceptions',
+      // '-ftemplate-backtrace-limit=0',
+      // '-Wall',
+      '-Wno-shorten-64-to-32',
+      '-Wno-unused-function',
+      '-Wno-unused-parameter',
+      '-Wno-unused-variable',
+      '-Wno-null-conversion',
+      '-Wno-c++11-extensions',
+      // '-Wshadow',
+      '-Wtautological-compare',
+      '-Dexport="__attribute__((used))"',
     ],
 
     // flags used when linking, in addition to `flags`
@@ -74,22 +91,6 @@ export function configure(c, configfile, projectdir, argv) {
       '--minify', '0',
     ],
 
-    // flags used when compiling source files, in addition to `flags`
-    cflags: [
-      '-fno-rtti',
-      // '-fno-exceptions',
-      '-ftemplate-backtrace-limit=0',
-      '-Wall',
-      '-Wno-shorten-64-to-32',
-      '-Wno-unused-function',
-      '-Wno-unused-parameter',
-      '-Wno-unused-variable',
-      '-Wno-null-conversion',
-      '-Wno-c++11-extensions',
-      // '-Wshadow',
-      '-Wtautological-compare',
-    ],
-
     clibs: [],
     modules: [],
     libmap: {},  // post processed from clibs; name => lib
@@ -102,6 +103,7 @@ export function configure(c, configfile, projectdir, argv) {
   } else {
     config.flags.push('-Oz')
     config.cflags.push('-DNDEBUG')
+    config.lflags.push('--llvm-lto'); config.lflags.push('3')
   }
 
   loadConfigFile(configfile, config)
@@ -138,33 +140,27 @@ export function configure(c, configfile, projectdir, argv) {
 
 
 function generateNinjafile(c, config, ninjaLine1) {
-  let s = ninjaLine1
-  s += `ninja_required_version = 1.3\n`
-  s += `\n`
-  s += `outdir = .\n`
-  s += `emcc = emcc\n`
-  s += `flags =${fmtargs(config.flags, " $\n  ")}\n`
-  s += `cflags = $flags${fmtargs(config.cflags, " $\n  ")}\n`
-  s += `lflags = $flags${fmtargs(config.lflags, " $\n  ")}\n`
-  s += `\n`
-  s += `\n`
-  s += `rule emcclink\n`
-  s += `  command = $emcc $lflags $in -o $out\n`
-  s += `  description = link $in -> $out\n`
-  s += `\n`
-  s += `rule emccobj\n`
-  s += `  command = $emcc -MMD -MF $out.d $cflags $in -c -o $out\n`
-  s += `  description = $emcc $in -> $out\n`
-  s += `  depfile = $out.d\n`
-  s += `\n`
-  s += `\n`
+  let s = ninjaLine1 + `
+ninja_required_version = 1.3
 
-  // TODO: PCH header with
-  //
-  //   #include <emscripten/emscripten.h>
-  //   #define export EMSCRIPTEN_KEEPALIVE
-  //
-  // See https://clang.llvm.org/docs/PCHInternals.html
+builddir = .
+flags =${fmtargs(config.flags, " $\n  ")}
+cflags =${fmtargs(config.cflags, " $\n  ")}
+lflags =${fmtargs(config.lflags, " $\n  ")}
+
+rule emcclink
+  command = emcc $flags $lflags $in -o $out
+  description = link $in -> $out
+
+rule emccobj
+  command = emcc -MMD -MF $out.d $flags $cflags $in -c -o $out
+  description = emcc $in -> $out
+  depfile = $out.d
+
+  `.trim()
+
+  s += `\n`
+  s += `\n`
 
   let builddirabs = Path.resolve(config.builddir)
   let objfilesByDep = new Map()  // depname => string[]
@@ -182,7 +178,7 @@ function generateNinjafile(c, config, ninjaLine1) {
       if (ofile.startsWith("../")) {
         ofile = srcfile
       }
-      ofile = `$outdir/obj/${extrasKey}${ofile}.bc`
+      ofile = `$builddir/obj/${extrasKey}${ofile}.bc`
 
       s += `build ${ofile}: emccobj ${buildpath(srcfile)}\n`
       s += extras
@@ -216,8 +212,8 @@ function generateNinjafile(c, config, ninjaLine1) {
   for (let m of config.modules) {
     // dlog({m})
 
-    let emccfile = `$outdir/${m.emccfile}`
-    let wasmfile = `$outdir/${m.wasmfile}`
+    let emccfile = `$builddir/${m.emccfile}`
+    let wasmfile = `$builddir/${m.wasmfile}`
 
     let deps = []
     let miscdeps = []
@@ -255,7 +251,7 @@ function generateNinjafile(c, config, ninjaLine1) {
   // first module is default target
   if (config.modules.length > 0) {
     s += `\n`
-    s += `default $outdir/${config.modules[0].wasmfile}\n`
+    s += `default $builddir/${config.modules[0].wasmfile}\n`
   }
 
 
@@ -407,6 +403,12 @@ function loadConfigFile(filename, config) {
     ...config,
     lib,
     module: _module,
+
+    require,
+    exports: {},
+    __filename: filename,
+    __dirname: Path.dirname(filename),
+    process,
   }
   vm.createContext(env)
   vm.runInContext(js, env, { filename })

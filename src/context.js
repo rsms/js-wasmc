@@ -1,6 +1,8 @@
 import { fmt } from "./fmt"
 import { stdoutStyle, stderrStyle } from "./termstyle"
 
+const Path = require("path")
+
 export class Context {
   constructor() {
     this.debug = false
@@ -24,6 +26,10 @@ export class Context {
 
   error(format, ...args) {
     console.error(stderrStyle.red(fmt(format, ...args)))
+  }
+
+  relpath(filename) {
+    return Path.relative(this.config.projectdir, filename)
   }
 
   get quiet() { return this._quiet }

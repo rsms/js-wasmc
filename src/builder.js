@@ -1,9 +1,20 @@
-import { assert, dlog, statSync, writefile, stripext, monotime, fmtduration, repr } from "./util"
+import {
+  assert,
+  dlog,
+  stat,
+  statSync,
+  writefile,
+  stripext,
+  monotime,
+  fmtduration,
+  repr,
+} from "./util"
 import { NinjaBot } from "./ninjabot"
 import { packageModule, gen_WASM_DATA } from "./cmd_package"
 import { scanmod } from "./scansource"
 import { hashWasmAPI } from "./scanwasm"
 import { configure } from "./configure"
+import { watchfile } from "./watchfile"
 
 const fs = require("fs")
 const Path = require("path")
@@ -99,6 +110,7 @@ export async function build(c, allmodules /* = c.config.modules*/ ) { // :Promis
 
 
 export async function buildIncrementally(c) {
+  return new Promise(async (_resolve, endIncrBuild) => {
   // type flags
   const
     T_WASM = 1,
@@ -107,11 +119,11 @@ export async function buildIncrementally(c) {
   let rebuildPromise = null
   let dirWatchers = new Map() // dir => DirWatcher
   let queuedForRebuild = new Set() // modules queued for immediate rebuild
+  let fsEventChangeTimer = null
+  let fsEventChangeSet = new Set() // DirmapEntry{ m: Mod, typeflags: T_* }
 
   watchConfigFile()
-
   await rebuild(c.config.modules, /* isFirstBuild */ true)
-
   c.log("Watching sources for changes.")
   c.force = false
 
@@ -129,7 +141,7 @@ export async function buildIncrementally(c) {
         let js1 = JSON.stringify({...c.config, didConfigure:true})
         let js2 = JSON.stringify(config)
         if (js1 != js2) {
-          c.log(`config file changed; wrote %s`, c.config.ninjafile)
+          c.log(`Config file changed. Wrote %s`, c.config.ninjafile)
           stopAllFSWatchers()
           if (rebuildPromise) {
             // wait for any ongoing build to complete
@@ -146,9 +158,13 @@ export async function buildIncrementally(c) {
       isConfiguring = false
     }
 
-    // watch config file for changes
-    fs.watch(c.config.file, (event, filename) => {
-      // dlog("config file fs event", event, Path.relative(c.config.projectdir, c.config.file))
+    watchfile(c.config.file, (event, st) => {
+      dlog("config file changed:", event)
+      if (event == "end") {
+        let relConfigFile = Path.relative(c.config.projectdir, c.config.file)
+        endIncrBuild(`config file ${relConfigFile} disappeared`)
+        return
+      }
       reconfigure()
     })
   }
@@ -200,10 +216,6 @@ export async function buildIncrementally(c) {
     }
     dirWatchers.clear()
   }
-
-
-  let fsEventChangeTimer = null
-  let fsEventChangeSet = new Set() // DirmapEntry{ m: Mod, typeflags: T_* }
 
 
   function flushDirFSEvents() {
@@ -290,7 +302,8 @@ export async function buildIncrementally(c) {
     return dirmap
   }
 
-}
+  }) // Promise
+} // buildIncrementally
 
 
 async function packagemod(c, m, didBuild, jsSourcesChanged) {
@@ -314,6 +327,7 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
         let js = await fs.promises.readFile(outfilejs, "utf8")
         js = js.replace(/const WASM_DATA = ([^;]+);/, 'const WASM_DATA = ' + WASM_DATA_js)
         await writefile(outfilejs, js, "utf8")
+        c.log("Write %s", () => c.relpath(outfilejs))
       } else {
         // copy file
         await copyfile(c, emccwasmfile, outfilewasm)
@@ -329,6 +343,7 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
     outfile:     outfilejs,  // path of output file
     wasmfile:    m.embed ? null : Path.relative(Path.dirname(outfilejs), outfilewasm),
     embed:       m.embed,
+    esmod:       m.format == "es",
     modname:     m.name.startsWith("wasm_mod_") ? null : m.name, // 1st: auto from outfilejs
     target:      m.target,
     ecma:        m.ecma,
@@ -343,23 +358,28 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
 
   // copy wasm file
   if (!m.embed && emccwasmfile != outfilewasm && (didBuild || !fs.existsSync(outfilewasm))) {
-    promises.push(
-      copyfile(c, emccwasmfile, outfilewasm) )
+    promises.push( copyfile(c, emccwasmfile, outfilewasm) )
   }
 
   // generate and write apihash file
-  promises.push(
-    writeWasmAPIHashFile(apihashfile, emccwasmfile) )
+  promises.push( writeWasmAPIHashFile(apihashfile, emccwasmfile) )
 
   // write js product soucemap file
+  let mapfile = outfilejs + ".map"
   if (sourcemap) {
-    promises.push(
-      writefile(outfilejs + ".map", sourcemap, 'utf8') )
+    fs.writeFileSync(mapfile, sourcemap, 'utf8')
   }
 
-  // write js product file
-  promises.push(
-    writefile(outfilejs, code, 'utf8') )
+  // write js product file (must be sync write b/c bug/behavior of nodejs fs.promises.writeFile)
+  // See note in util.js for writefile()
+  fs.writeFileSync(outfilejs, code, 'utf8')
+
+  // log
+  if (sourcemap) {
+    c.log("Write %s & %s", () => c.relpath(outfilejs), () => c.relpath(mapfile))
+  } else {
+    c.log("Write %s", () => c.relpath(outfilejs))
+  }
 
   return Promise.all(promises).then(() => true)
 }
@@ -396,7 +416,7 @@ function writeWasmAPIHashFile(apihashfile, emccwasmfile) {  // Promise<identical
 
 
 function copyfile(c, srcfile, dstfile) {
-  c.log("copy %s -> %s",
+  c.log("Copy %s -> %s",
     Path.relative(c.config.projectdir, srcfile),
     Path.relative(c.config.projectdir, dstfile)
   )

@@ -16,26 +16,32 @@ export async function cmd_build(c, opts, args) {
   dlog(">> configure")
   c.config = configure(c, opts.config, args[0], args.slice())
   if (c.config.didConfigure) {
-    c.log(`wrote %s`, c.config.ninjafile)
+    c.log(`Write %s`, c.config.ninjafile)
   }
 
-  // build
-  try {
-    if (c.watch) {
+  // build incrementally as source files change
+  if (c.watch) {
+    try {
       dlog(">> buildIncrementally")
-      await buildIncrementally(c)
-    } else {
-      dlog(">> build")
-      let buildmods = await build(c)
-      if (buildmods.length == 0) {
-        c.log("No work to do")
-      }
+      return buildIncrementally(c)  // never resolves; only rejects
+    } catch (err) {
+      c.error("%s", err.stack || err)
+      process.exit(1)
+    }
+  }
+
+  // build once
+  try {
+    dlog(">> build")
+    let buildmods = await build(c)
+    if (buildmods.length == 0) {
+      c.log("No work to do")
     }
   } catch (err) {
     if (err == "ninja error") {
       c.error("build failed")
     } else {
-    c.error("build failed: %s", err.stack || err)
+      c.error("build failed: %s", err.stack || err)
     }
     process.exit(1)
   }

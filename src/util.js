@@ -55,9 +55,8 @@ export const assert = DEBUG ? function(condition, message) {
 
 export const dlog = DEBUG ? function(){
   let e = new Error()
-  let loc = "dlog"
   let m = e.stack.split(/\n/, 3)[2].match(/(src\/[^\/]+\.js:\d+:\d+)/)
-  loc = m ? `D ${m[1]}:` : "D:"
+  let loc = m ? `D ${m[1]}:` : "D:"
   console.log.apply(console, [loc, ...arguments])
 } : function(){}
 
@@ -94,6 +93,9 @@ export async function writefile(path, data, options) {
   let triedMkdirs = false
   while (1) {
     try {
+      // TODO: make this an atomic write (write to temp file + mv) since the implementation
+      // of fs.promises.writeFile apparently opens and truncates the file, then waits a little,
+      // at which point observers will see an empty file, and finally write to it.
       await fs.promises.writeFile(path, data, options)
       break
     } catch(e) {

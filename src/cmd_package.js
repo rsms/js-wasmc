@@ -199,7 +199,7 @@ export function packageModule(c, options) {  // :Promise<jscode>
 
   return rollupWrapper(c, opts).then(r => {
     // dlog({ "map.sources": r.map.sources, imports: r.imports, exports: r.exports })
-    return compileBundle(opts, r.code, r.map.toString()/*, r.exports*/)
+    return compileBundle(opts, r.code, r.map.toString()/*, r.exportAll*/)
   }).catch(err => {
     let file = err.filename || (err.loc && err.loc.file) || null
     let line = err.line || (err.loc && err.loc.line) || 0
@@ -262,6 +262,7 @@ function rollupWrapper(c, opts) {
     return Promise.resolve({
       code: opts.esmod ? defaultJsentry : getDefaultJsentryCJS(),
       map: '{"version":3,"sources":["wasmc:default"],"mappings":""}',
+      // exportAll: true,
     })
   }
 
@@ -581,22 +582,44 @@ function transformEmccAST(opts, toplevel) {
       } // top-level defun with name, e.g. function foo() { ... }
 
 
-      else if (
-        parentIsToplevel &&
-        node instanceof ast.If &&
-        node.condition.operator == "!" &&
-        node.condition.expression.TYPE == "Call" &&
-        node.condition.expression.expression.property == "getOwnPropertyDescriptor" &&
-        node.condition.expression.args.length > 1 &&
-        node.condition.expression.args[0].TYPE == "SymbolRef" &&
-        node.condition.expression.args[0].name == "Module"
-      ) {
-        // Strip
-        // if (!Object.getOwnPropertyDescriptor(Module, "ENV")) Module["ENV"] = function() {
-        //   abort("'ENV' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS");
-        // };
-        return new ast.EmptyStatement()
-      }
+
+      else if (parentIsToplevel && node instanceof ast.If) {
+        // if (condition) ...
+
+        if (
+          node.condition.TYPE == "SymbolRef" &&
+          node.condition.name == "ENVIRONMENT_IS_NODE" &&
+          node.body.TYPE == "BlockStatement"
+        ) {
+          // if (ENVIRONMENT_IS_NODE) { ... }
+          //
+          // Strip all `process.on` calls, e.g.
+          //   process["on"]("uncaughtException", function(ex) { ... });
+          //   process["on"]("unhandledRejection", abort);
+          node.body.body = node.body.body.filter(n =>
+            n.TYPE != "SimpleStatement" ||
+            n.body.TYPE != "Call" ||
+            n.body.expression.TYPE != "Sub" ||
+            n.body.expression.expression.name != "process" ||
+            n.body.expression.property.value != "on"
+          )
+
+        } else if (
+          node.condition.operator == "!" &&
+          node.condition.expression.TYPE == "Call" &&
+          node.condition.expression.expression.property == "getOwnPropertyDescriptor" &&
+          node.condition.expression.args.length > 1 &&
+          node.condition.expression.args[0].TYPE == "SymbolRef" &&
+          node.condition.expression.args[0].name == "Module"
+        ) {
+          // Strip
+          // if (!Object.getOwnPropertyDescriptor(Module, "ENV")) Module["ENV"] = function() {
+          //   abort("'ENV' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS");
+          // };
+          return new ast.EmptyStatement()
+        }
+      } // if (condition) ...
+
       // else console.log(node.TYPE)
 
       return node
@@ -681,7 +704,7 @@ function transformEmccAST(opts, toplevel) {
     console.log(`[info] WASM functions: ${names.join(', ')}`)
   }
 
-  return newTopLevel
+  return { ast: newTopLevel, apiEntries: Array.from(apiEntries.keys()) }
 }
 
 
@@ -754,6 +777,8 @@ function getModuleEnclosure(opts) {
   //   postRun = `()=>{console.timeEnd(${label})}`
   // }
 
+  let targetsNode = opts.target == "node" || opts.target == "node-legacy"
+
 
   // snippet added to Module when -syncinit is set
   let instantiateWasm = opts.syncinit ? `
@@ -785,11 +810,6 @@ function getModuleEnclosure(opts) {
                      `console.error.bind(console)`
   )
 
-  let abortFunJs = (
-    opts.debug ? `function abort(e) { throw new Error("wasm abort: "+(e.stack||e)) }` :
-                 `function abort() { throw new Error("wasm abort") }`
-  )
-
   let assertFunJs = (
     opts.debug ? `
     function assert(condition, message) {
@@ -810,6 +830,14 @@ function getModuleEnclosure(opts) {
       `"you need to wait for the module to be ready (use the Module.ready Promise)");` +
       `}\n`
     : ``
+  )
+
+  let onRuntimeInitializedExtra = (
+    opts.esmod ? `let e = ${targetsNode ? "orig_module.exports" : "{}"};`
+               : `let e = exports;` +
+                 `if (typeof define == 'function') {` +
+                   `define(${JSON.stringify(opts.modname)}, e);` +
+                 `}`
   )
 
 
@@ -834,7 +862,11 @@ function getModuleEnclosure(opts) {
   }
 
   function emptyfun() {}
-  ${abortFunJs}
+
+  function abort(e) {
+    throw new Error("wasm abort" + (e ? ": " + (e.stack||e) : ""))
+  }
+
   ${assertFunJs}
   ${errNotInitializedFun}
 
@@ -852,10 +884,8 @@ function getModuleEnclosure(opts) {
   Module.ready = new Promise(resolve => {
     Module.onRuntimeInitialized = () => {
       __wasmcUpdateAPI()
-      if (typeof define == 'function') {
-        define(${JSON.stringify(opts.modname)}, exports)
-      }
-      resolve(exports)
+      ${onRuntimeInitializedExtra}
+      resolve(e)
     }
   })
 
@@ -867,8 +897,8 @@ function getModuleEnclosure(opts) {
 
   // make print function available in module namespace
   const print = ${opts.noconsole ? "emptyfun" : `Module.print`};
-  const out = ${opts.nostdout ? "emptyfun" : `print`};
-  const err = ${(opts.noconsole || opts.nostderr) ? "emptyfun" : `Module.printErr`};
+  let out = ${opts.nostdout ? "emptyfun" : `print`};
+  let err = ${(opts.noconsole || opts.nostderr) ? "emptyfun" : `Module.printErr`};
 
   `.trim().replace(/^\s{2}/g, '') + "\n"
 
@@ -916,16 +946,21 @@ export function gen_WASM_DATA(buf, target) {
     // disable by setting target="node-legacy" or target=null.
     buf = require('zlib').brotliCompressSync(buf)
     return (
-      'require("zlib").brotliDecompressSync(new Uint8Array([' +
-      Array.prototype.join.call(buf, ",") +
-      ']));'
+      'require("zlib").brotliDecompressSync(Buffer.from(' +
+      JSON.stringify(buf.toString("base64")) +
+      ',"base64"));'
     )
+    // return (
+    //   'require("zlib").brotliDecompressSync(new Uint8Array([' +
+    //   Array.prototype.join.call(buf, ",") +
+    //   ']));'
+    // )
   }
   return 'new Uint8Array([' + Array.prototype.join.call(buf, ",") + ']);'
 }
 
 
-function compileBundle(opts, wrapperCode, wrapperMapJSON) {
+function compileBundle(opts, wrapperCode, wrapperMapJSON/*, exportAll*/) {
 
   let wrapperStart = opts.esmod ? '' :
     `(function(exports){"use strict";\n`
@@ -988,13 +1023,17 @@ function compileBundle(opts, wrapperCode, wrapperMapJSON) {
     enclosure.post && ['<wasmcpost>', enclosure.post],
   ].filter(v => !!v)
 
+
+  // let apiEntries = []
   options.parse = options.parse || {}
   options.parse.toplevel = null
   for (let [name, source] of srcfiles) {
     options.parse.filename = name
     options.parse.toplevel = uglify.parse(source, options.parse)
     if (name == opts.emccfile) {
-      options.parse.toplevel = transformEmccAST(opts, options.parse.toplevel)
+      let tr = transformEmccAST(opts, options.parse.toplevel)
+      // apiEntries = tr.apiEntries.filter(name => name[0] == "_" && !name.startsWith("__"))
+      options.parse.toplevel = tr.ast
       // options.parse.toplevel = wrapInCallClosure(options.parse.toplevel)
       // options.parse.toplevel = wrapSingleExport(
       //   options.parse.toplevel,

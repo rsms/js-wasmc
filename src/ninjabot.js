@@ -6,6 +6,7 @@ const fs = require("fs")
 const Path = require("path")
 const child_process = require("child_process")
 
+const emsdkDockerImage = "rsms/emsdk:1.39.4"
 const wasmcdir = __dirname;
 
 
@@ -15,6 +16,10 @@ const wasmcdir = __dirname;
 // This way we ware able to perform many calls to ninja without having to wait
 // for docker to start every time.
 // Importantly, this causes a big speed improvement for "watch" mode.
+//
+// To run the docker image interactively for development:
+//
+//   docker run --rm -it -v "$PWD:/src" rsms/emsdk:latest
 //
 export class NinjaBot {
   constructor(projectdir, builddir) {
@@ -120,7 +125,7 @@ export class NinjaBot {
       "-v", this.projectdir + ":/src",
       // "-v", Path.dirname() + ":/wasmc-tmp:ro",
 
-      "rsms/emsdk:latest",
+      emsdkDockerImage,
       "node", this.relbuilddir + "/" + ninjabotProgramName,
     ]
 
@@ -156,6 +161,7 @@ export class NinjaBot {
           line.startsWith("shared:ERROR: '/emsdk/upstream/bin/clang") ||
           line.startsWith("ninja: build stopped:") ||
           line.startsWith("Cleaning...") ||
+          line.startsWith("no output file specified, not emitting output") ||  // emcc bug
           (quiet && (
             line.startsWith("[") ||
             line.startsWith("emcc -")
