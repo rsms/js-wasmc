@@ -330,10 +330,13 @@ function loadConfigFile(filename, config) {
       lib = { sources: lib }
     } else if (typeof lib == "string") {
       lib = { sources: [lib] }
-    } else if (!lib.sources) {
-      throw new Error(`missing "sources" list property in lib ${lib.name||""}`)
-    } else if (!Array.isArray(lib.sources)) {
-      lib.sources = [lib.sources]
+    } else {
+      lib = deepclone(lib)  // copy so we can modify
+      if (!lib.sources) {
+        throw new Error(`missing "sources" list property in lib ${lib.name||""}`)
+      } else if (!Array.isArray(lib.sources)) {
+        lib.sources = [ lib.sources ]
+      }
     }
     if (!lib.name) {
       lib.name = `clib_${autoNameCounter++}`
@@ -350,6 +353,7 @@ function loadConfigFile(filename, config) {
 
   // module(props :ProductProps)
   function _module(m) {
+    m = deepclone(m)  // copy so we can modify
     if (!m.name) {
       m.name = `wasm_mod_${autoNameCounter++}`
     }
@@ -419,4 +423,9 @@ function loadConfigFile(filename, config) {
     }
   }
   return config
+}
+
+
+function deepclone(v) {
+  return JSON.parse(JSON.stringify(v))
 }
