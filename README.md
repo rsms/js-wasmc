@@ -30,7 +30,7 @@ options:
 
 ### Example
 
-> See the [`example`](example/) directory for a complete example.
+> See the [`example`](examples/example/) directory for a complete example.
 
 Input `foo.c`:
 
@@ -97,8 +97,8 @@ wasmc looks for `wasmc.js` in the project directory and evaluates it.
 You can define modules (WASM products) and "libs" (collection of C and/or C++ files
 compiled with certain flags) in this file.
 
-- See `examples/example/wasmc.js` for an example.
-- See `misc/config-file.d.ts` for a complete API description of the configuration file.
+- See [`examples/example/wasmc.js`](examples/example/wasmc.js) for an example.
+- See [`misc/config-file.d.ts`](misc/config-file.d.ts) for a complete API description of the configuration file.
 
 
 ## Building from source
