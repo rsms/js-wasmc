@@ -26,7 +26,7 @@ function closure-compiler {
 
 WASMC_VERSION=$(node -p 'require("./package.json").version')
 if [[ -d .git ]]; then
-  WASMC_VERSION="$WASMC_VERSION+$(git rev-parse --short HEAD)"
+  WASMC_VERSION="$WASMC_VERSION ($(git rev-parse --short HEAD))"
 fi
 
 
