@@ -10,6 +10,8 @@ if DIRTY_SRC=$(git status -uno --porcelain | grep -v "?? " | grep src/); then
   git status -s -uno >&2
   echo "Commit or revert these changes and run $0 again." >&2
   exit 1
+else
+  echo "git status check OK."
 fi
 
 
@@ -22,18 +24,33 @@ if [[ "$LATEST_VERSION" == "$VERSION" ]]; then
   echo "version=${VERSION} in package.json is already published." >&2
   echo "Change the version in package.json and run $0 again." >&2
   exit 1
+else
+  echo "Version ${VERSION} check OK."
 fi
+
+
+# audit npm packages
+echo "npm audit ..."
+if ! (npm audit >/dev/null); then
+  npm audit
+  exit 1
+fi
+echo "npm audit OK."
+
 
 # build
 if [[ "$(find src -type f -newer wasmc)" != "" ]]; then
   bash misc/build.sh
+  echo "Build OK."
+else
+  echo "Skipping build; wasmc is up to date. OK."
 fi
 
 # make sure it works
-echo "testing..."
+echo "Testing..."
 echo ./wasmc -C examples/example -clean
      ./wasmc -C examples/example -clean >/dev/null 2>&1
-echo "OK"
+echo "Test OK."
 
 echo "----------------------------------------------------"
 
