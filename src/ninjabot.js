@@ -41,7 +41,12 @@ export class NinjaBot {
 
 
   build(targets, clean) { // Promise<didWork:bool>
-    return this.request("build", { dir: this.relbuilddir, targets, clean }).then(r => r.result)
+    return this.request("build", {
+      dir: ".",  // ninjabot runs in projectdir
+      ninjafile: Path.join(this.relbuilddir, "build.ninja"),
+      targets,
+      clean,
+    }).then(r => r.result)
   }
 
 

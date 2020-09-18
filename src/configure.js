@@ -1,4 +1,4 @@
-import { assert, dlog, writefileSync, globv, stripext } from "./util"
+import { assert, dlog, writefileSync, globv, stripext, repr } from "./util"
 
 const fs = require("fs")
 const Path = require("path")
@@ -143,14 +143,14 @@ function generateNinjafile(c, config, ninjaLine1) {
   let s = ninjaLine1 + `
 ninja_required_version = 1.3
 
-builddir = .
+builddir = ${config.builddir}
 flags =${fmtargs(config.flags, " $\n  ")}
 cflags =${fmtargs(config.cflags, " $\n  ")}
 lflags =${fmtargs(config.lflags, " $\n  ")}
 
 rule emcclink
   command = emcc $flags $lflags $in -o $out
-  description = link $in -> $out
+  description = link $out
 
 rule emccobj
   command = emcc -MMD -MF $out.d $flags $cflags $in -c -o $out
@@ -262,7 +262,7 @@ rule emccobj
   function buildpath(filename) {
     filename = Path.resolve(filename)
     if (filename.startsWith(config.projectdir)) {
-      return Path.relative(config.builddir, filename)
+      return Path.relative(config.projectdir, filename)
     }
     return filename
   }
@@ -321,7 +321,9 @@ function loadConfigFile(filename, config) {
   let autoNameCounter = 0
 
   // dlog("loadConfigFile", filename, config)
-  let js = fs.readFileSync(filename, "utf8")
+  const configSource = fs.readFileSync(filename, "utf8")
+
+  const moduleNames = new Set()
 
   // lib(sources :string|string[])
   // lib(props :CLibProps)
@@ -351,11 +353,50 @@ function loadConfigFile(filename, config) {
     return mklib(props).name
   }
 
+  function raiseError(message, stackOffset) {
+    if (stackOffset === undefined) {
+      stackOffset = 0
+    }
+    try {
+      const e = new Error(message)
+      e.name = "WasmcConfigError"
+      throw e
+    } catch (e) {
+      if (e.stack) {
+        let frame = e.stack.split("\n", stackOffset + 3)[stackOffset + 2] || ""
+        let m = /\sat\s([^:]+):(\d+):(\d+)/.exec(frame)
+        if (m) {
+          const file = m[1], line = parseInt(m[2]) - 1, col = parseInt(m[3])
+          const ctxLinesLen = 2 // extra lines before & after
+          const srclines = configSource.split("\n", line + ctxLinesLen + 1)
+          const ctxlines = []
+          const lineNoWidth = (line+1).toString().length
+          const lineno = (line) => (line+1).toString().padEnd(" ", lineNoWidth)
+          for (let i = Math.max(0, line - ctxLinesLen); i < line; i++) {
+            ctxlines.push(lineno(i) + "   " + srclines[i])
+          }
+          ctxlines.push(lineno(line) + " > " + srclines[line])
+          for (let i = line + 1; i < srclines.length; i++) {
+            ctxlines.push(lineno(i) + "   " + srclines[i])
+          }
+          e.origin = { file, line, col }
+          e.stack = `${file}:${line}:${col}: ${message}\n${ctxlines.join("\n")}`
+        }
+      }
+      throw e
+    }
+  }
+
   // module(props :ProductProps)
   function _module(m) {
     m = deepclone(m)  // copy so we can modify
     if (!m.name) {
-      m.name = `wasm_mod_${autoNameCounter++}`
+      m.name = `wasm_${autoNameCounter++}`
+    } else {
+      if (moduleNames.has(m.name)) {
+        raiseError(`Duplicate module name ${repr(m.name)}`, 1)
+      }
+      moduleNames.add(m.name)
     }
 
     if (m.deps && !Array.isArray(m.deps)) {
@@ -380,15 +421,24 @@ function loadConfigFile(filename, config) {
       throw new Error(`no sources or deps specified for module ${m.name}`)
     }
 
-    m.emccfile = `obj/${m.name}.js`
-    m.wasmfile = `obj/${m.name}.wasm`
-
     if (!m.out) {
       m.out = Path.join(config.builddir, m.name + ".js")
     }
+    if (!m.outwasm) {
+      m.outwasm = stripext(m.out) + ".wasm"
+    }
 
     m.outfilejs = Path.resolve(config.projectdir, m.out)
-    m.outfilewasm = stripext(m.outfilejs) + ".wasm"
+    m.outfilewasm = Path.resolve(config.projectdir, m.outwasm)
+
+    m.emccfile = `obj/${m.name}.js`
+    m.wasmfile = `obj/${m.name}.wasm`
+
+    // let outwasm2 = m.outwasm.endsWith(".wasm") ? m.outwasm : m.outwasm + ".wasm"
+    // if (!m.outwasm.endsWith(".wasm")) {
+    //   outwasm2 =
+    // }
+    // m.wasmfile = `obj/${m.outwasm}.wasm`
 
     if (m.constants) {
       if (typeof m.constants != "object") {
@@ -403,25 +453,37 @@ function loadConfigFile(filename, config) {
     return m.name
   }
 
+  const configdir = Path.dirname(Path.resolve(filename))
+  function require2(path) {
+    if (path[0] == '.') {
+      path = Path.resolve(configdir, path)
+    }
+    return require(path)
+  }
+
   let env = {
     ...config,
     lib,
     module: _module,
 
-    require,
+    require: require2,
     exports: {},
     __filename: filename,
     __dirname: Path.dirname(filename),
     process,
   }
   vm.createContext(env)
-  vm.runInContext(js, env, { filename })
+  vm.runInContext(configSource, env, { filename })
+
   // copy known keys from env to config
   for (let k in env) {
     if (k in config) {
       config[k] = env[k]
     }
   }
+
+  // make sure there are no name conficts
+
   return config
 }
 

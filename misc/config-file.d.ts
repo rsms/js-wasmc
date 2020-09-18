@@ -30,7 +30,8 @@ declare var builddir :string
 
 
 interface ModuleProps {
-  out?     :string  // Output JavaScript filename
+  out?     :string  // Output JavaScript filename (defaults to `name` with .js file extension)
+  outwasm? :string  // Output WASM filename (defaults to `out` with .wasm file extension)
   jsentry? :string  // JavaScript entry file
   name?    :string  // Name used in generated ninja build file
 

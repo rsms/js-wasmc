@@ -24,17 +24,19 @@ function main() {
 }
 
 
-function ninja_build(dir, targets, clean) {
+function ninja_build(dir, ninjafile, targets, clean) {
+  let args = (ninjafile ? ["-f", ninjafile] : []).concat(targets)
   if (clean) {
-    return ninja_clean(dir).then(() => ninja_exec(dir, targets))
+    return ninja_clean(dir, ninjafile).then(() => ninja_exec(dir, args))
   } else {
-    return ninja_exec(dir, targets)
+    return ninja_exec(dir, args)
   }
 }
 
 
-function ninja_clean(dir) {
-  return ninja_exec(dir, ["-t", "clean"])
+function ninja_clean(dir, ninjafile) {
+  let args = (ninjafile ? ["-f", ninjafile] : []).concat(["-t", "clean"])
+  return ninja_exec(dir, args)
 }
 
 
@@ -95,9 +97,9 @@ function handleRequest(requestId, p) {
 function onmsg(msg) {
   // log("onmsg", msg)
   if (msg.request == "build") {
-    handleRequest(msg.rid, ninja_build(msg.dir, msg.targets, msg.clean))
+    handleRequest(msg.rid, ninja_build(msg.dir, msg.ninjafile, msg.targets, msg.clean))
   } else if (msg.request == "clean") {
-    handleRequest(msg.rid, ninja_clean(msg.dir))
+    handleRequest(msg.rid, ninja_clean(msg.dir, msg.ninjafile))
   } else {
     send({ response: msg.rid, error: `invalid ninjabot command: ${msg.request}` })
   }

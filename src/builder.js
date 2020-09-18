@@ -8,6 +8,7 @@ import {
   monotime,
   fmtduration,
   repr,
+  mkdirsSync,
 } from "./util"
 import { NinjaBot } from "./ninjabot"
 import { packageModule, gen_WASM_DATA } from "./cmd_package"
@@ -57,7 +58,7 @@ export async function build(c, allmodules /* = c.config.modules*/ ) { // :Promis
   }
   if (dirtyWasmMods.length > 0) {
     dlog(">> build/ninja", dirtyWasmMods.map(m => m.name))
-    let targets = dirtyWasmMods.map(m => m.wasmfile)
+    let targets = dirtyWasmMods.map(m => Path.join(c.config.builddir, m.wasmfile))
     let builddirabs = Path.resolve(projectdir, c.config.builddir)
     let ninja = getNinjaBot(c)
     didBuild = await ninja.build(targets, /*clean*/c.force)
@@ -311,8 +312,16 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
   let emccfile = Path.resolve(c.config.builddir, m.emccfile)
   let emccwasmfile = Path.resolve(c.config.builddir, m.wasmfile)
   let outfilejs = Path.resolve(c.config.projectdir, m.out)
-  let outfilewasm = stripext(outfilejs) + ".wasm"
+  let outfilewasm = Path.resolve(c.config.projectdir, m.outwasm)
   let apihashfile = emccfile + ".apihash"
+
+  dlog(">> packagemod", {
+    emccfile,
+    emccwasmfile,
+    outfilejs,
+    outfilewasm,
+    apihashfile,
+  })
 
   if (didBuild && !jsSourcesChanged) {
     // The wasm module was built, but our JS source files didn't change.
@@ -363,6 +372,9 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
 
   // generate and write apihash file
   promises.push( writeWasmAPIHashFile(apihashfile, emccwasmfile) )
+
+  // make sure dirs exist
+  mkdirsSync(Path.dirname(outfilejs))
 
   // write js product soucemap file
   let mapfile = outfilejs + ".map"
