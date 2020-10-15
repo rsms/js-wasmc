@@ -1,6 +1,6 @@
 {
   "name": "wasmc",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Simplifies building of WebAssembly modules from C and C++",
   "bin": {
     "wasmc": "wasmc"
