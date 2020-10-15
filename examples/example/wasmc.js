@@ -25,4 +25,5 @@ module({
   sources: "src/bar.c",
   cflags: [ "-Wall" ],
   // embed:   true,
+  sourceMap: builddir + "/bar.map", // custom source map filename
 })

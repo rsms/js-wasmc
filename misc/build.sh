@@ -3,17 +3,41 @@ cd "$(dirname "$0")/.."
 
 ./deps/build.sh
 
+PROG=$0
 DEBUG=false
 ROLLUP_ARGS=
-if [[ "$1" == "-w" ]]; then
-  ROLLUP_ARGS=--watch
-  DEBUG=true
-  shift
-fi
-if [[ "$1" == "-g" ]]; then
-  DEBUG=true
-  shift
-fi
+
+function usage {
+  echo "usage: $PROG [options]"
+  echo "options:"
+  echo "-g, -debug  Create debug build instead of release build"
+  echo "-w, -watch  Watch source files for changes & rebuild"
+  echo "-h, -help   Show help on stdout and exit"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  help|-h|-help|--help)
+    usage
+    exit 0
+    shift
+    ;;
+  -g|-debug|--debug)
+    DEBUG=true
+    shift
+    ;;
+  -w|-watch|--watch)
+    ROLLUP_ARGS=--watch
+    shift
+    ;;
+  -*)
+    echo "$PROG: Unknown command or option $1" >&2
+    usage >&2
+    exit 1
+    shift
+    ;;
+  esac
+done
 
 
 function closure-compiler {

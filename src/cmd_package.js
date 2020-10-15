@@ -166,13 +166,14 @@ export async function main(c, args) {
 //   embed?           : bool  // embed wasm file inside js file
 //   syncinit?        : bool
 //   inlineSourcemap? : bool
+//   sourcemapFile?   : string
 //   nosourcemap?     : bool  // do not generate sourcemap
 //   noconsole?       : bool  // silence all print calls (normally routed to console)
 //   nostdout?        : bool  // silence output to stdout (normally routed to console.log)
 //   nostderr?        : bool  // silence output to stderr (normally routed to console.error)
 // }
 //
-export function packageModule(c, options) {  // :Promise<jscode>
+export function packageModule(c, options) {  // :Promise<{code:string,sourcemap:string}>
   let opts = {
     // defaults
     globalDefs: {},
@@ -1098,9 +1099,10 @@ function compileBundle(opts, wrapperCode, wrapperMapJSON/*, exportAll*/) {
         Buffer.from(sourcemap, "utf8").toString("base64")
       )
       sourcemap = ""
+    } else if (opts.sourcemapFile) {
+      mapurl = opts.sourcemapFile
     } else {
       mapurl = Path.basename(opts.outfile + ".map")
-      // fs.writeFileSync(opts.outfile + ".map", sourcemap, 'utf8')
     }
     code += `\n//# sourceMappingURL=${mapurl}\n`
   }

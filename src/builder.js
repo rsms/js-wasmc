@@ -361,6 +361,20 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
     globalDefs:  m.constants,
   }
 
+  // sourceMap
+  if (m.sourceMap) {
+    if (m.sourceMap == "inline") {
+      packageOptions.inlineSourcemap = true
+    } else if (typeof m.sourceMap == "string") {
+      // note: m.sourceMap is always an absolute path.
+      // If it was provided as relative in the config, it has been resolved to projectdir.
+      packageOptions.sourcemapFile =
+        Path.relative(Path.dirname(packageOptions.outfile), m.sourceMap)
+    } // else: packageModule() defaults to creating a source map at `${outfile}.map`
+  } else {
+    packageOptions.nosourcemap = true
+  }
+
   // packageModule
   let { code, sourcemap } = await packageModule(c, packageOptions)
   let promises = []
@@ -377,9 +391,8 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
   mkdirsSync(Path.dirname(outfilejs))
 
   // write js product soucemap file
-  let mapfile = outfilejs + ".map"
-  if (sourcemap) {
-    fs.writeFileSync(mapfile, sourcemap, 'utf8')
+  if (sourcemap && m.sourceMap && m.sourceMap != "inline") {
+    fs.writeFileSync(m.sourceMap, sourcemap, 'utf8')
   }
 
   // write js product file (must be sync write b/c bug/behavior of nodejs fs.promises.writeFile)
@@ -387,8 +400,8 @@ async function packagemod(c, m, didBuild, jsSourcesChanged) {
   fs.writeFileSync(outfilejs, code, 'utf8')
 
   // log
-  if (sourcemap) {
-    c.log("Write %s & %s", () => c.relpath(outfilejs), () => c.relpath(mapfile))
+  if (sourcemap && m.sourceMap && m.sourceMap != "inline") {
+    c.log("Write %s & %s", () => c.relpath(outfilejs), () => c.relpath(m.sourceMap))
   } else {
     c.log("Write %s", () => c.relpath(outfilejs))
   }

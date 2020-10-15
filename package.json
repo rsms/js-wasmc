@@ -22,7 +22,7 @@
   "scripts": {
     "build": "./misc/build.sh",
     "build-g": "./misc/build.sh -g",
-    "build-w": "./misc/build.sh -w"
+    "build-w": "./misc/build.sh -g -w"
   },
   "devDependencies": {
     "google-closure-compiler": "^20191111.0.0",

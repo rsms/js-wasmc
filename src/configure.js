@@ -1,4 +1,4 @@
-import { assert, dlog, writefileSync, globv, stripext, repr } from "./util"
+import { assert, dlog, writefileSync, globv, stripext, repr, levenshteinDistance } from "./util"
 
 const fs = require("fs")
 const Path = require("path")
@@ -387,8 +387,52 @@ function loadConfigFile(filename, config) {
     }
   }
 
+  // known k in config[k] passed to module(config)
+  // Keep in sync with ModuleProps in config-file.d.ts
+  const knownModuleConfigProps = {
+    out: 1,
+    outwasm: 1,
+    jsentry: 1,
+    name: 1,
+    deps: 1,
+    cflags: 1,
+    lflags: 1,
+    sources: 1,
+    target: 1,
+    ecma: 1,
+    constants: 1,
+    embed: 1,
+    format: 1,
+    sourceMap: 1,
+    jslib: 1,
+  }
+
+  function guessModuleConfigProp(misspelled) {
+    let guess = ""
+    let guessdist = 3 // max distance
+    for (let prop of Object.keys(knownModuleConfigProps)) {
+      const d = levenshteinDistance(misspelled, prop)
+      if (d < guessdist) {
+        guess = prop
+        guessdist = d
+      }
+    }
+    return guess
+  }
+
   // module(props :ProductProps)
   function _module(m) {
+    // check props
+    for (let k of Object.keys(m)) {
+      if (!(k in knownModuleConfigProps)) {
+        const guess = guessModuleConfigProp(k)
+        raiseError(
+          `Unknown module() property ${repr(k)}` +
+          (!guess ? "" : `. Did you mean ${repr(guess)}?`)
+        , 1)
+      }
+    }
+
     m = deepclone(m)  // copy so we can modify
     if (!m.name) {
       m.name = `wasm_${autoNameCounter++}`
@@ -433,6 +477,24 @@ function loadConfigFile(filename, config) {
 
     m.emccfile = `obj/${m.name}.js`
     m.wasmfile = `obj/${m.name}.wasm`
+
+    // convert m.sourceMap into either absolute filename or false
+    if (m.sourceMap === undefined) {
+      m.sourceMap = true
+    }
+    if (m.sourceMap) {
+      if (typeof m.sourceMap == "string") {
+        if (m.sourceMap.toLowerCase() == "inline") {
+          m.sourceMap = "inline"
+        } else {
+          m.sourceMap = Path.resolve(config.projectdir, m.sourceMap)
+        }
+      } else {
+        m.sourceMap = Path.resolve(config.projectdir, m.out + ".map")
+      }
+    } else {
+      m.sourceMap = false
+    }
 
     // let outwasm2 = m.outwasm.endsWith(".wasm") ? m.outwasm : m.outwasm + ".wasm"
     // if (!m.outwasm.endsWith(".wasm")) {

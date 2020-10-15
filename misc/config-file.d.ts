@@ -39,7 +39,10 @@ interface ModuleProps {
   // The libs sources are linked into the module.
   deps? :string|string[]
 
-  // additional flags to pass to linker (emcc)
+  // compiler flags for this module, in addition to the top-level cflags
+  cflags? :string[]
+
+  // linker flags for this module, in addition to the top-level lflags
   lflags? :string[]
 
   // defines an anonymous lib and adds it to deps. Supports glob patterns.
@@ -55,19 +58,42 @@ interface ModuleProps {
   // older NodeJS versions, set target="node-legacy" (or don't set target= at all)
   // which disables compression.
   //
-  target?: "node" | "node-legacy" | "web" | "worker" | null
+  target? : "node" | "node-legacy" | "web" | "worker" | null
 
   // ECMA standard. Defaults to latest == 0 == 8.
-  ecma?: 0 | 5 | 6 | 7 | 8
+  ecma? : 0 | 5 | 6 | 7 | 8
 
   // Constant values to provide globally in the javascript
-  constants?: {[k:string]:ConstantValue}
+  constants? : {[k:string]:ConstantValue}
 
   // If true, embed the wasm module inside the output javascript file
-  embed?: boolean
+  embed? : boolean
 
   // module format. Defaults to "umd". "es" outputs code with import and export statements.
-  format?: "umd" | "es"
+  format? : "umd" | "es"
+
+  // If false or empty string, don't create a source map.
+  // If "inline" is set, source map is embedded in the JS (out) file.
+  // If a string (other than "inline") is provided, it names the filename for the source map.
+  // Relative filenames are relative to projectdir (dirname of your wasmc.js file.)
+  // When true, source map is written to `${out}.map`
+  // Defaults to true when undefined.
+  sourceMap? : boolean | "inline" | string
+
+  // jslib names a JavaScript file to be included as a library with Emscripten/emcc, for
+  // providing JavaScript functions to the WASM module.
+  // The file named here should at some point declare functions like this:
+  //
+  //   mergeInto(LibraryManager.library, {
+  //     fun_from_js: function(a, b) {
+  //       console.log("fun_from_js called from WASM with args:", a, b)
+  //     },
+  //   })
+  //
+  // See thee emscripten documentation for more details:
+  // https://emscripten.org/docs/porting/connecting_cpp_and_javascript/Interacting-with-code.html
+  //
+  jslib? : string
 }
 
 
