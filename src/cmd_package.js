@@ -851,7 +851,13 @@ function getModuleEnclosure(opts) {
   // snippet added to Module when -syncinit is set
   let instantiateWasm = opts.syncinit ? `
     instantiateWasm(info, receiveInstance) {
-      let instance = new WebAssembly.Instance(new WebAssembly.Module(getBinary()), info)
+      let binary
+      if (wasmBinary) {
+        binary = new Uint8Array(wasmBinary)
+      } else {
+        binary = getBinary()
+      }
+      let instance = new WebAssembly.Instance(new WebAssembly.Module(binary), info)
       receiveInstance(instance)
       return instance.exports
     },
