@@ -465,9 +465,15 @@ function transformEmccAST(opts, toplevel) {
             //
 
             // Support both new and old AST formats.
-            // Pattern of new asm route:
+            // Pattern of new asm route (unoptimized builds):
+            // createExportWrapper does the same assert checks as the old format.
             //
             // var _malloc = Module["_malloc"] = createExportWrapper("malloc");
+            //
+            // Pattern of new asm route (optimized builds):
+            // var _malloc = Module["_malloc"] = function() {
+            //  return (_malloc = Module["_malloc"] = Module["asm"]["B"]).apply(null, arguments);
+            // };
             //
             // createExportWrapper does the same assert checks as the old format.
 
@@ -526,11 +532,24 @@ function transformEmccAST(opts, toplevel) {
                   lastStmt.value.expression instanceof ast.Dot)
               {
                 if (!apiEntries.has(name)) {
-                  let mangledName = (
-                    lastStmt.value.expression.property == 'apply' ?
-                      lastStmt.value.expression.expression.property.value :
-                      lastStmt.value.expression.property.value
-                  )
+                  let unappliedStmt = lastStmt.value.expression.property == 'apply' ?
+                    lastStmt.value.expression.expression :
+                    lastStmt.value.expression
+                  
+                  // we're dealing with the new AST, optimized format
+                  if (unappliedStmt.operator == '=') {
+                    if (!unappliedStmt.right || !unappliedStmt.right.right) {
+                      throw new Error(`Unsupported output AST format (please file a bug)`)
+                    }
+
+                    unappliedStmt = unappliedStmt.right.right
+                  }
+
+                  let mangledName = unappliedStmt.property.value
+
+                  if (!mangledName) {
+                    throw new Error(`Unable to find mangled name for Module["${name}"]`)
+                  }
 
                   if (!(def.value.left instanceof ast.Sub)) {
                     // Sanity check -- expected "Module["_foo"]"
@@ -541,7 +560,7 @@ function transformEmccAST(opts, toplevel) {
                   apiEntries.set(name, {
                     wasm:   mangledName,
                     sym:    def.name,
-                    expr:   lastStmt.value.expression.expression,
+                    expr:   unappliedStmt,
                     modsub: def.value.left,
                   })
                 }
