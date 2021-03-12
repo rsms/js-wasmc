@@ -464,10 +464,57 @@ function transformEmccAST(opts, toplevel) {
             // var _foo = Module["_foo"] = Module["asm"]["a"];
             //
 
+            // Support both new and old AST formats.
+            // Pattern of new asm route:
+            //
+            // var _malloc = Module["_malloc"] = createExportWrapper("malloc");
+            //
+            // createExportWrapper does the same assert checks as the old format.
+
             if (
               def.value &&
               def.value.operator == '=' &&
+              def.value.right instanceof ast.Call &&
+              def.value.right.expression.name == "createExportWrapper" &&
+              def.value.left.TYPE == "Sub" &&
+              def.value.left.expression.name == "Module"
+            ) {
+              let call = def.value.right
+              let firstStmt = call.args[0]
+              let mangledName = firstStmt.value
+
+              if (!apiEntries.has(name)) {
+                apiEntries.set(name, {
+                  wasm:   mangledName,
+                  sym:    def.name,
+                  expr:   new ast.Sub({
+                    expression: new ast.Dot({
+                      expression: def.value.left.expression,
+                      property: "asm"
+                    }),
+                    property: new ast.String({
+                      value: mangledName,
+                      quote: '"'
+                    })
+                  }),
+                  modsub: def.value.left,
+                })
+
+                if (name != "___wasm_call_ctors") {
+                  if (!opts.debug || opts.syncinit) {
+                    // strip
+                    return new ast.EmptyStatement()
+                  } else {
+                    // replace RHS with errNotInitialized
+                    def.value.right = new ast.SymbolVar({ name: "errNotInitialized" })
+                  }
+                }
+              }
+            } else if (
+              def.value &&
+              def.value.operator == '=' &&
               def.value.right instanceof ast.Function &&
+              name.indexOf('_emscripten_stack') === -1 &&
               def.value.left.TYPE == "Sub" &&
               def.value.left.expression.name == "Module"
             ) {
@@ -498,6 +545,7 @@ function transformEmccAST(opts, toplevel) {
                     modsub: def.value.left,
                   })
                 }
+
                 if (name != "___wasm_call_ctors") {
                   if (!opts.debug || opts.syncinit) {
                     // strip
