@@ -16,6 +16,7 @@ options:
   -debug, -g       Disable optimizations and include data for debuggers.
   -watch, -w       Watch source files and rebuild as needed.
   -config <file>   Load config file from <file> instead of <dir>/wasmc.js
+  -image <string>  Docker image to build with instead of rsms/emsdk:1.39.4
   -clean           Rebuild even when product and sources are up to date.
   -quiet, -q       Do not print information to stdout except for warnings and errors
   -help, -h        Show help message and exit
@@ -26,7 +27,6 @@ options:
   The module directory. Defaults to "." (dirname(<file>) with -config)
 
 ```
-
 
 ### Example
 

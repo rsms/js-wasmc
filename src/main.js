@@ -3,6 +3,7 @@ import { parseopts } from "./parseopts"
 import { Context } from "./context"
 import * as cmd_package from "./cmd_package"
 import { cmd_build } from "./cmd_build"
+import { defaultEmsdkDockerImage } from "./ninjabot"
 
 try{require('source-map-support').install()}catch(_){}
 
@@ -19,6 +20,7 @@ const options = {
   debug: false, g: false,
   watch: false, w: false,
   config: "",
+  image: "",
   clean: false,
   quiet: false, q: false,
 }
@@ -31,6 +33,7 @@ options:
   -debug, -g       Disable optimizations and include data for debuggers.
   -watch, -w       Watch source files and rebuild as needed.
   -config <file>   Load config file from <file> instead of <dir>/wasmc.js
+  -image <string>  Docker image to build with instead of ${defaultEmsdkDockerImage}
   -clean           Rebuild even when product and sources are up to date.
   -quiet, -q       Do not print information to stdout except for warnings and errors
   -help, -h        Show help message and exit
