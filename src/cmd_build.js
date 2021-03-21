@@ -11,7 +11,7 @@ export async function cmd_build(c, opts, args) {
   c.watch = opts.watch || opts.w
   c.force = opts.clean
   c.quiet = opts.quiet || opts.q
-  c.image = opts['docker-image'] || opts.dockerImage
+  c.image = opts['docker-image']
 
   // configure
   dlog(">> configure")

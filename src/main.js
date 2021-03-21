@@ -20,7 +20,7 @@ const options = {
   debug: false, g: false,
   watch: false, w: false,
   config: "",
-  image: "",
+  "docker-image": "",
   clean: false,
   quiet: false, q: false,
 }
