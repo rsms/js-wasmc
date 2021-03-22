@@ -464,10 +464,63 @@ function transformEmccAST(opts, toplevel) {
             // var _foo = Module["_foo"] = Module["asm"]["a"];
             //
 
+            // Support both new and old AST formats.
+            // Pattern of new asm route (unoptimized builds):
+            // createExportWrapper does the same assert checks as the old format.
+            //
+            // var _malloc = Module["_malloc"] = createExportWrapper("malloc");
+            //
+            // Pattern of new asm route (optimized builds):
+            // var _malloc = Module["_malloc"] = function() {
+            //  return (_malloc = Module["_malloc"] = Module["asm"]["B"]).apply(null, arguments);
+            // };
+            //
+            // createExportWrapper does the same assert checks as the old format.
+
             if (
               def.value &&
               def.value.operator == '=' &&
+              def.value.right instanceof ast.Call &&
+              def.value.right.expression.name == "createExportWrapper" &&
+              def.value.left.TYPE == "Sub" &&
+              def.value.left.expression.name == "Module"
+            ) {
+              let call = def.value.right
+              let firstStmt = call.args[0]
+              let mangledName = firstStmt.value
+
+              if (!apiEntries.has(name)) {
+                apiEntries.set(name, {
+                  wasm:   mangledName,
+                  sym:    def.name,
+                  expr:   new ast.Sub({
+                    expression: new ast.Dot({
+                      expression: def.value.left.expression,
+                      property: "asm"
+                    }),
+                    property: new ast.String({
+                      value: mangledName,
+                      quote: '"'
+                    })
+                  }),
+                  modsub: def.value.left,
+                })
+
+                if (name != "___wasm_call_ctors") {
+                  if (!opts.debug || opts.syncinit) {
+                    // strip
+                    return new ast.EmptyStatement()
+                  } else {
+                    // replace RHS with errNotInitialized
+                    def.value.right = new ast.SymbolVar({ name: "errNotInitialized" })
+                  }
+                }
+              }
+            } else if (
+              def.value &&
+              def.value.operator == '=' &&
               def.value.right instanceof ast.Function &&
+              name.indexOf('_emscripten_stack') === -1 &&
               def.value.left.TYPE == "Sub" &&
               def.value.left.expression.name == "Module"
             ) {
@@ -479,11 +532,24 @@ function transformEmccAST(opts, toplevel) {
                   lastStmt.value.expression instanceof ast.Dot)
               {
                 if (!apiEntries.has(name)) {
-                  let mangledName = (
-                    lastStmt.value.expression.property == 'apply' ?
-                      lastStmt.value.expression.expression.property.value :
-                      lastStmt.value.expression.property.value
-                  )
+                  let unappliedStmt = lastStmt.value.expression.property == 'apply' ?
+                    lastStmt.value.expression.expression :
+                    lastStmt.value.expression
+                  
+                  // we're dealing with the new AST, optimized format
+                  if (unappliedStmt.operator == '=') {
+                    if (!unappliedStmt.right || !unappliedStmt.right.right) {
+                      throw new Error(`Unsupported output AST format (please file a bug)`)
+                    }
+
+                    unappliedStmt = unappliedStmt.right.right
+                  }
+
+                  let mangledName = unappliedStmt.property.value
+
+                  if (!mangledName) {
+                    throw new Error(`Unable to find mangled name for Module["${name}"]`)
+                  }
 
                   if (!(def.value.left instanceof ast.Sub)) {
                     // Sanity check -- expected "Module["_foo"]"
@@ -494,10 +560,11 @@ function transformEmccAST(opts, toplevel) {
                   apiEntries.set(name, {
                     wasm:   mangledName,
                     sym:    def.name,
-                    expr:   lastStmt.value.expression.expression,
+                    expr:   unappliedStmt,
                     modsub: def.value.left,
                   })
                 }
+
                 if (name != "___wasm_call_ctors") {
                   if (!opts.debug || opts.syncinit) {
                     // strip
@@ -784,7 +851,13 @@ function getModuleEnclosure(opts) {
   // snippet added to Module when -syncinit is set
   let instantiateWasm = opts.syncinit ? `
     instantiateWasm(info, receiveInstance) {
-      let instance = new WebAssembly.Instance(new WebAssembly.Module(getBinary()), info)
+      let binary
+      if (wasmBinary) {
+        binary = new Uint8Array(wasmBinary)
+      } else {
+        binary = getBinary()
+      }
+      let instance = new WebAssembly.Instance(new WebAssembly.Module(binary), info)
       receiveInstance(instance)
       return instance.exports
     },

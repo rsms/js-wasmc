@@ -6,7 +6,7 @@ const fs = require("fs")
 const Path = require("path")
 const child_process = require("child_process")
 
-const emsdkDockerImage = "rsms/emsdk:1.39.4"
+export const defaultEmsdkDockerImage = "rsms/emsdk:1.39.4"
 const wasmcdir = __dirname;
 
 
@@ -55,10 +55,10 @@ export class NinjaBot {
   }
 
 
-  start(quiet) {
+  start(c) {
     if (!this.started) {
       this.started = true
-      this.dockerSpawn(quiet)
+      this.dockerSpawn(c)
     }
   }
 
@@ -107,7 +107,10 @@ export class NinjaBot {
   }
 
 
-  dockerSpawn(quiet) {
+  dockerSpawn(c) {
+    const quiet = c.quiet
+    const dockerImage = c.image || defaultEmsdkDockerImage
+
     clearTimeout(this.respawnTimer)
 
     // make sure ninjabot program is available
@@ -130,7 +133,7 @@ export class NinjaBot {
       "-v", this.projectdir + ":/src",
       // "-v", Path.dirname() + ":/wasmc-tmp:ro",
 
-      emsdkDockerImage,
+      dockerImage,
       "node", this.relbuilddir + "/" + ninjabotProgramName,
     ]
 

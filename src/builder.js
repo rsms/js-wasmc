@@ -584,7 +584,7 @@ function getNinjaBot(c) {
   let n = ninjaBotInstances.get(key)
   if (!n) {
     n = new NinjaBot(c.config.projectdir, builddir)
-    n.start(c.quiet)
+    n.start(c)
     ninjaBotInstances.set(key, n)
   }
   return n
