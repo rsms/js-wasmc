@@ -83,6 +83,7 @@ export function configure(c, configfile, projectdir, argv) {
       '-s', 'NO_FILESYSTEM=1',
       '-s', 'ABORTING_MALLOC=0',
       '-s', 'ALLOW_MEMORY_GROWTH=1',
+      '-s', 'ALLOW_TABLE_GROWTH=1',
       '-s', 'DISABLE_EXCEPTION_CATCHING=1',
       '--closure', '0',
       '--minify', '0',

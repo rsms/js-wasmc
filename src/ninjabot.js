@@ -6,7 +6,7 @@ const fs = require("fs")
 const Path = require("path")
 const child_process = require("child_process")
 
-const emsdkDockerImage = "rsms/emsdk:1.40.1"
+const emsdkDockerImage = "rsms/emsdk:2.0.25"
 const wasmcdir = __dirname
 
 
