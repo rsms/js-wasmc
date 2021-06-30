@@ -380,7 +380,6 @@ const DEBUG_AST_TR = DEBUG && false
 function transformEmccAST(opts, toplevel) {
   let updateAPIFun = null
   let ModuleObj = null
-  let apiEntries = new Map()
   let didAddImports = false
 
   const dummyLoc = {file:"<wasmpre>",line:0,col:0}
@@ -442,82 +441,14 @@ function transformEmccAST(opts, toplevel) {
             dbg(`strip var def ${name} in ${def.start.file} (wasmc)`)
             return new ast.EmptyStatement()
 
-          // } else if (stripDefsWithName.has(name)) {
-          //   // console.log(`strip def`, name)
-          //   node.definitions.splice(i, 1)
-          } else {
-            // Pattern of asm route:
-            //
-            // var _foo = Module["_foo"] = function() {
-            //   assert(runtimeInitialized, "msg");
-            //   assert(!runtimeExited, "msg");
-            //   return Module["asm"]["_foo"].apply(null, arguments);
-            // }
-            //
-            // rewrite as:
-            //
-            // var _foo = Module["_foo"] = Module["asm"]["_foo"];
-            //
-            // which, when building optimized builds, maps from WASM mangled
-            // names to api name, e.g
-            //
-            // var _foo = Module["_foo"] = Module["asm"]["a"];
-            //
-
-            if (
-              def.value &&
-              def.value.operator == '=' &&
-              def.value.right instanceof ast.Function &&
-              def.value.left.TYPE == "Sub" &&
-              def.value.left.expression.name == "Module"
-            ) {
-              // case: var PROP = Module[PROP] = function() { ... }
-              let f = def.value.right
-              let lastStmt = f.body[f.body.length-1]
-              if (lastStmt instanceof ast.Return &&
-                  lastStmt.value instanceof ast.Call &&
-                  lastStmt.value.expression instanceof ast.Dot)
-              {
-                if (!apiEntries.has(name)) {
-                  let mangledName = (
-                    lastStmt.value.expression.property == 'apply' ?
-                      lastStmt.value.expression.expression.property.value :
-                      lastStmt.value.expression.property.value
-                  )
-
-                  if (!(def.value.left instanceof ast.Sub)) {
-                    // Sanity check -- expected "Module["_foo"]"
-                    // In case emcc changes its output, we'll know.
-                    throw new Error(`Module["${name}"] not found`)
-                  }
-
-                  apiEntries.set(name, {
-                    wasm:   mangledName,
-                    sym:    def.name,
-                    expr:   lastStmt.value.expression.expression,
-                    modsub: def.value.left,
-                  })
-                }
-                if (name != "___wasm_call_ctors") {
-                  if (!opts.debug || opts.syncinit) {
-                    // strip
-                    return new ast.EmptyStatement()
-                  } else {
-                    // replace RHS with errNotInitialized
-                    def.value.right = new ast.SymbolVar({ name: "errNotInitialized" })
-                  }
-                }
-              }
-            } else if (
-              name.startsWith("real_") &&
-              def.value.TYPE == "Sub" &&
-              def.value.expression.name == "asm"
-            ) {
-              // e.g. var real__hello = asm["hello"];
-              // dbg(def.value.TYPE, def.value.property.value)
-              return new ast.EmptyStatement()
-            }
-
+          } else if (
+            name.startsWith("real_") &&
+            def.value.TYPE == "Sub" &&
+            def.value.expression.name == "asm"
+          ) {
+            // e.g. var real__hello = asm["hello"];
+            // dbg(def.value.TYPE, def.value.property.value)
+            return new ast.EmptyStatement()
           }
         }
 
@@ -579,6 +510,31 @@ function transformEmccAST(opts, toplevel) {
           // node.start = undefined
           // node.end = undefined
           return new ast.EmptyStatement()
+        } else if (name == "run") {
+          // I.e.
+          //   function run(args) { ...
+          // Add "__wasmcUpdateAPI()" to body
+          //dlog("FunDef >>", name)
+          let insertIndex = 0
+          for (let i = 0; i < node.body.length; i++) {
+            let cn = node.body[i]
+            if (cn instanceof ast.If) {
+              // insert after
+              //   if (runDependencies > 0) {
+              //     return;
+              //   }
+              insertIndex = i + 1
+              break
+            } else {
+              //dlog("**", cn.TYPE)
+            }
+          }
+          node.body.splice(insertIndex, 0, new ast.SimpleStatement({
+            body: new ast.Call({
+              args: [],
+              expression: new ast.SymbolVar({ name: "__wasmcUpdateAPI" })
+            })
+          }))
         }
       } // top-level defun with name, e.g. function foo() { ... }
 
@@ -629,28 +585,6 @@ function transformEmccAST(opts, toplevel) {
     }) // uglify.TreeTransformer
   ) // newTopLevel = toplevel.transform
 
-
-  // Generate var definitions for all WASM API exports.
-  // These are later assigned.
-  let defs = [], nullnode = new ast.Undefined()
-  let defmap = new Map()
-  for (let [name, ent] of apiEntries) {
-    let def = new ast.VarDef({
-      name: ent.sym,
-      value: null,
-    })
-    defmap.set(name, def)
-    defs.push(def)
-    // ent.sym.reference({})
-  }
-  newTopLevel.body.unshift(
-    new ast.Var({ definitions: defs })
-  )
-
-  if (apiEntries.size == 0) {
-    console.warn(`[warn] no WASM functions found -- this might be a bug`)
-  }
-
   // console.time("figure_out_scope()")
   // newTopLevel.figure_out_scope()
   // console.timeEnd("figure_out_scope()")
@@ -660,52 +594,7 @@ function transformEmccAST(opts, toplevel) {
   // // console.log("_malloc:", newTopLevel.variables._values["$_malloc"].references.length)
   // // console.log("_setThrew:", newTopLevel.variables._values["$_setThrew"])
 
-  // add wasm api assignments to __wasmcUpdateAPI function
-  for (let [name, ent] of apiEntries) {
-    // ent.sym.thedef = defmap.get(ent.sym.name).name
-    // if (ent.sym.name == "_hello") {
-    //   console.log("ent.sym", ent.sym)
-    // }
-    // ent.sym.reference()
-
-    // e.g. Module["_foo"] = _foo = Module["asm"]["A"]
-
-    // ent.sym.thedef = defmap.get(ent.sym.name).name
-    // let sym = defmap.get(ent.sym.name).name
-
-    // ent.sym.reference({})
-
-    // let stmt = new ast.SimpleStatement({
-    //   body: new ast.Assign({
-    //     operator: "=",
-    //     left: ent.sym,
-    //     right: ent.expr,
-    //   })
-    // })
-    // updateAPIFun.body.push(stmt)
-
-    updateAPIFun.body.push(new ast.SimpleStatement({
-      body: new ast.Assign({
-        operator: "=",
-        left: ent.modsub,
-        right: new ast.Assign({
-          operator: "=",
-          left: ent.sym,
-          right: ent.expr,
-        }),
-      })
-    }))
-  }
-
-  if (opts.verbose) {
-    let names = []
-    for (let [name, ent] of apiEntries) {
-      names.push(name)
-    }
-    console.log(`[info] WASM functions: ${names.join(', ')}`)
-  }
-
-  return { ast: newTopLevel, apiEntries: Array.from(apiEntries.keys()) }
+  return { ast: newTopLevel }
 }
 
 
@@ -784,7 +673,8 @@ function getModuleEnclosure(opts) {
   // snippet added to Module when -syncinit is set
   let instantiateWasm = opts.syncinit ? `
     instantiateWasm(info, receiveInstance) {
-      let instance = new WebAssembly.Instance(new WebAssembly.Module(getBinary()), info)
+      let instance = new WebAssembly.Instance(
+        new WebAssembly.Module(getBinary(wasmBinaryFile)), info)
       receiveInstance(instance)
       return instance.exports
     },
@@ -884,7 +774,6 @@ function getModuleEnclosure(opts) {
 
   Module.ready = new Promise(resolve => {
     Module.onRuntimeInitialized = () => {
-      __wasmcUpdateAPI()
       ${onRuntimeInitializedExtra}
       resolve(e)
     }
@@ -926,7 +815,7 @@ function getModuleEnclosure(opts) {
 function getEmccFileSource(opts) {
   let js = fs.readFileSync(opts.emccfile, 'utf8')
   if (opts.wasmfile) {
-    let m = /(?:var|const|let)\s*wasmBinaryFile\s*=\s*(?:'([^']+)'|"([^"]+)");?/g.exec(js)
+    let m = /\bwasmBinaryFile\s*=\s*(?:'([^']+)'|"([^"]+)");?/g.exec(js)
     if (!m) {
       throw new Error(`wasmc failed to find wasmBinaryFile in EMCC output file ${opts.emccfile}`)
     }
@@ -1025,7 +914,6 @@ function compileBundle(opts, wrapperCode, wrapperMapJSON/*, exportAll*/) {
   ].filter(v => !!v)
 
 
-  // let apiEntries = []
   options.parse = options.parse || {}
   options.parse.toplevel = null
   for (let [name, source] of srcfiles) {
@@ -1033,7 +921,6 @@ function compileBundle(opts, wrapperCode, wrapperMapJSON/*, exportAll*/) {
     options.parse.toplevel = uglify.parse(source, options.parse)
     if (name == opts.emccfile) {
       let tr = transformEmccAST(opts, options.parse.toplevel)
-      // apiEntries = tr.apiEntries.filter(name => name[0] == "_" && !name.startsWith("__"))
       options.parse.toplevel = tr.ast
       // options.parse.toplevel = wrapInCallClosure(options.parse.toplevel)
       // options.parse.toplevel = wrapSingleExport(

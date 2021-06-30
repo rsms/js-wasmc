@@ -78,15 +78,12 @@ export function configure(c, configfile, projectdir, argv) {
     // flags used when linking, in addition to `flags`
     lflags: [
       // Emscripten specific (ASM.JS/WASM)
-      // '--llvm-lto', '0',
-      // '--llvm-opts', '2',
       '-s', 'WASM=1',
       '-s', 'NO_EXIT_RUNTIME=1',
       '-s', 'NO_FILESYSTEM=1',
       '-s', 'ABORTING_MALLOC=0',
       '-s', 'ALLOW_MEMORY_GROWTH=1',
       '-s', 'DISABLE_EXCEPTION_CATCHING=1',
-      '--js-opts', '0',
       '--closure', '0',
       '--minify', '0',
     ],
@@ -103,7 +100,6 @@ export function configure(c, configfile, projectdir, argv) {
   } else {
     config.flags.push('-Oz')
     config.cflags.push('-DNDEBUG')
-    config.lflags.push('--llvm-lto'); config.lflags.push('3')
   }
 
   loadConfigFile(configfile, config)

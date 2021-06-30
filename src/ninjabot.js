@@ -6,8 +6,8 @@ const fs = require("fs")
 const Path = require("path")
 const child_process = require("child_process")
 
-const emsdkDockerImage = "rsms/emsdk:1.39.4"
-const wasmcdir = __dirname;
+const emsdkDockerImage = "rsms/emsdk:1.40.1"
+const wasmcdir = __dirname
 
 
 // NinjaBot spawns a docker instance running rsms/emsdk:latest with misc/ninjabot.js
